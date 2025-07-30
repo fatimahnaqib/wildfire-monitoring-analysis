@@ -25,8 +25,8 @@ airflow/__pycache__/
 docker-compose.override.yml
 
 # Data & outputs
-data/*.csv
-dashboard/*.html
+airflow/data/*.csv
+airflow/dashboard/*.html
 
 # IDEs
 .vscode/
@@ -34,7 +34,7 @@ dashboard/*.html
 *.iml
 
 # Ignore macOS system files anywhere
-.DS_Store
+*.DS_Store
 
 # Ignore specific files inside airflow folder
 airflow/airflow.cfg
