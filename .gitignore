@@ -32,3 +32,10 @@ dashboard/*.html
 .vscode/
 .idea/
 *.iml
+
+# Ignore macOS system files anywhere
+.DS_Store
+
+# Ignore specific files inside airflow folder
+airflow/airflow.cfg
+airflow/webserver_config.py
