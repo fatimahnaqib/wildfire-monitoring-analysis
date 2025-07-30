@@ -31,8 +31,10 @@ wildfire-monitoring-analysis/
 │
 ├── airflow/                  # Airflow DAGs & ETL logic
 │   ├── dags/
+        └── __init__.py
 │   │   └── wildfire_etl_dag.py
 │   └── etl/
+        └── __init__.py
 │       ├── download.py
 │       ├── kafka_producer.py
 │       ├── generate_map.py
@@ -51,10 +53,8 @@ wildfire-monitoring-analysis/
 ├── data/                     # Local storage for raw CSV from FIRMS
 │
 ├── docker-compose.yml
-├── .env
 ├── .gitignore
 ├── README.md
-└── wildfire-architecture.md
 ```
 
 ---
