@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 from confluent_kafka import Producer
+from .validation import is_valid_record
 from .config import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC, OUTPUT_FILE
 
 def delivery_report(err, msg):
@@ -18,11 +19,14 @@ def produce_to_kafka():
         with open(OUTPUT_FILE, "r") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                producer.produce(KAFKA_TOPIC, value=json.dumps(row), callback=delivery_report)
-                producer.poll(0)
+                if is_valid_record(row):  # Only send valid records
+                    producer.produce(KAFKA_TOPIC, value=json.dumps(row), callback=delivery_report)
+                    producer.poll(0)
+                else:
+                    logging.info("Skipped invalid record")
 
         producer.flush()
-        logging.info("All records sent to Kafka topic")
+        logging.info("All valid records sent to Kafka topic")
     except Exception as e:
         logging.error(f"Kafka production error: {str(e)}")
         raise
