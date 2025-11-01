@@ -2,22 +2,18 @@ FROM apache/airflow:2.8.1-python3.11
 
 USER root
 
+# Install only essential build dependencies (removed unused packages)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         gcc \
-        build-essential \
-        default-libmysqlclient-dev \
         libpq-dev \
-        libsasl2-dev \
-        libssl-dev \
         libffi-dev \
-        libkrb5-dev \
-        curl \
+        wget \
         netcat-openbsd \
-        vim \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER airflow
 
+# Copy requirements first for better layer caching
 COPY airflow/requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt

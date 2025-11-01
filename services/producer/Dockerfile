@@ -8,12 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first for better layer caching
-COPY requirements.txt /app/requirements.txt
+COPY services/producer/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application code
-COPY create_topic.py /app/
-COPY consumer.py /app/
+COPY services/producer/app /app/app
+COPY airflow/etl /app/etl
 
-CMD ["sh", "-c", "python create_topic.py && python consumer.py"]
+EXPOSE 8001
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

@@ -8,12 +8,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first for better layer caching
-COPY requirements.txt /app/requirements.txt
+COPY services/consumer/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application code
-COPY create_topic.py /app/
-COPY consumer.py /app/
+COPY services/consumer/app /app/app
 
-CMD ["sh", "-c", "python create_topic.py && python consumer.py"]
+EXPOSE 8002
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
