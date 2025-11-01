@@ -88,6 +88,7 @@ airflow/data/*.json
 
 # Generated maps and visualizations (exclude HTML, but keep example PNG)
 airflow/dashboard/*.html
+!airflow/dashboard/wildfire_map.png
 
 # ==============================================================================
 # Docker
