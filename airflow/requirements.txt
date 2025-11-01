@@ -2,5 +2,4 @@ psycopg2-binary==2.9.9
 pandas==2.2.2
 folium==0.16.0
 confluent-kafka==2.2.0
-six==1.16.0
-requests
+requests==2.31.0

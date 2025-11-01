@@ -1,41 +1,138 @@
-# Byte-compiled / optimized / DLL files
+# ==============================================================================
+# Python
+# ==============================================================================
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
 *.so
+.Python
+build/
+dist/
+*.egg
+*.egg-info/
 
-# Virtual environments
-.venv/
-env/
+# ==============================================================================
+# Virtual Environments
+# ==============================================================================
 venv/
+env/
+ENV/
+.venv/
+env.bak/
+venv.bak/
 
-# Airflow logs & configs
-airflow/logs/
+# ==============================================================================
+# Environment Variables & Secrets
+# ==============================================================================
+.env
+.env.local
+.env.*.local
+*.env
+
+# ==============================================================================
+# Testing & Code Quality
+# ==============================================================================
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ==============================================================================
+# Jupyter Notebooks
+# ==============================================================================
+.ipynb_checkpoints/
+
+# ==============================================================================
+# Databases
+# ==============================================================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================================================================
+# Logs
+# ==============================================================================
+*.log
+*.log.*
+logs/
+
+# ==============================================================================
+# Temporary & Backup Files
+# ==============================================================================
+*.tmp
+*.temp
+*.bak
+
+# ==============================================================================
+# Airflow
+# ==============================================================================
+# Airflow database and configuration
 airflow/airflow.db
 airflow/unittests.cfg
-airflow/__pycache__/
+airflow/airflow.cfg
+airflow/webserver_config.py
+airflow/*.pid
 
-# Environment files
-.env
+# Airflow logs (already covered by logs/ above, but explicit for clarity)
+airflow/logs/
 
-# Docker
-*.pid
-*.bak
-*.swp
-docker-compose.override.yml
-
-# Data & outputs
+# Generated data files
 airflow/data/*.csv
+airflow/data/*.json
+
+# Generated maps and visualizations (exclude HTML, but keep example PNG)
 airflow/dashboard/*.html
 
-# IDEs
+# ==============================================================================
+# Docker
+# ==============================================================================
+docker-compose.override.yml
+.dockerignore
+
+# ==============================================================================
+# IDE / Editors
+# ==============================================================================
+# VSCode
 .vscode/
+
+# PyCharm / IntelliJ
 .idea/
 *.iml
 
-# Ignore macOS system files anywhere
-*.DS_Store
+# Vim / Vi
+*.swp
+*.swo
+*~
 
-# Ignore specific files inside airflow folder
-airflow/airflow.cfg
-airflow/webserver_config.py
+# Eclipse
+.project
+.classpath
+.settings/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ==============================================================================
+# Operating System Files
+# ==============================================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Linux
+*~
