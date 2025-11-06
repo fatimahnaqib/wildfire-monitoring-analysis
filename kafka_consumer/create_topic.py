@@ -1,7 +1,7 @@
 # create_topic.py
 from confluent_kafka.admin import AdminClient, NewTopic
 
-admin_conf = {'bootstrap.servers': 'kafka:9092'}
+admin_conf = {"bootstrap.servers": "kafka:9092"}
 admin_client = AdminClient(admin_conf)
 
 topic_name = "wildfire_data"

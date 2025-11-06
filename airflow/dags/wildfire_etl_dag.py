@@ -20,15 +20,15 @@ from airflow.utils.dates import days_ago
 
 # Default arguments for the DAG
 default_args: Dict[str, Any] = {
-    'owner': 'wildfire-team',
-    'depends_on_past': False,
-    'start_date': days_ago(1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
-    'catchup': False,
-    'max_active_runs': 1
+    "owner": "wildfire-team",
+    "depends_on_past": False,
+    "start_date": days_ago(1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "catchup": False,
+    "max_active_runs": 1,
 }
 
 # DAG definition
@@ -41,23 +41,28 @@ dag = DAG(
     tags=["wildfire", "etl", "kafka", "visualization", "nasa"],
     doc_md=__doc__,
     params={
-        'firms_area': '-125.0,32.0,-113.0,42.0',  # California region
-        'day_range': '3',  # Past 3 days
-        'map_center_lat': 37.0,
-        'map_center_lon': -120.0,
-        'map_zoom': 5
-    }
+        "firms_area": "-125.0,32.0,-113.0,42.0",  # California region
+        "day_range": "3",  # Past 3 days
+        "map_center_lat": 37.0,
+        "map_center_lon": -120.0,
+        "map_zoom": 5,
+    },
 )
+
 
 def call_ingestion_service(**context) -> None:
     """Call the ingestion microservice to download the latest CSV."""
-    params = context.get('params', {})
+    params = context.get("params", {})
     url = "http://ingestion:8000/ingest"
     try:
-        response = requests.post(url, params={
-            'area': params.get('firms_area'),
-            'day_range': params.get('day_range')
-        }, timeout=60)
+        response = requests.post(
+            url,
+            params={
+                "area": params.get("firms_area"),
+                "day_range": params.get("day_range"),
+            },
+            timeout=60,
+        )
         response.raise_for_status()
     except Exception as e:
         raise RuntimeError(f"Ingestion service call failed: {e}")
@@ -77,14 +82,18 @@ def call_producer_service(**context) -> None:
 
 def call_map_service(**context) -> None:
     """Call the map microservice to generate the wildfire map."""
-    params = context.get('params', {})
+    params = context.get("params", {})
     url = "http://map:8003/generate"
     try:
-        response = requests.post(url, params={
-            'center_lat': params.get('map_center_lat', 37.0),
-            'center_lon': params.get('map_center_lon', -120.0),
-            'zoom': params.get('map_zoom', 5)
-        }, timeout=120)
+        response = requests.post(
+            url,
+            params={
+                "center_lat": params.get("map_center_lat", 37.0),
+                "center_lon": params.get("map_center_lon", -120.0),
+                "zoom": params.get("map_zoom", 5),
+            },
+            timeout=120,
+        )
         response.raise_for_status()
     except Exception as e:
         raise RuntimeError(f"Map service call failed: {e}")
@@ -92,9 +101,7 @@ def call_map_service(**context) -> None:
 
 # Task definitions
 start_task = DummyOperator(
-    task_id="start_pipeline",
-    dag=dag,
-    doc_md="Start of the wildfire ETL pipeline"
+    task_id="start_pipeline", dag=dag, doc_md="Start of the wildfire ETL pipeline"
 )
 
 download_task = PythonOperator(
@@ -110,7 +117,7 @@ download_task = PythonOperator(
     - Handles API errors and timeouts gracefully
     """,
     retries=3,
-    retry_delay=timedelta(minutes=2)
+    retry_delay=timedelta(minutes=2),
 )
 
 kafka_task = PythonOperator(
@@ -128,7 +135,7 @@ kafka_task = PythonOperator(
     - Handles validation errors and Kafka connection issues
     """,
     retries=2,
-    retry_delay=timedelta(minutes=3)
+    retry_delay=timedelta(minutes=3),
 )
 
 map_task = PythonOperator(
@@ -146,13 +153,11 @@ map_task = PythonOperator(
     - Saves HTML map to dashboard directory
     """,
     retries=2,
-    retry_delay=timedelta(minutes=2)
+    retry_delay=timedelta(minutes=2),
 )
 
 end_task = DummyOperator(
-    task_id="end_pipeline",
-    dag=dag,
-    doc_md="End of the wildfire ETL pipeline"
+    task_id="end_pipeline", dag=dag, doc_md="End of the wildfire ETL pipeline"
 )
 
 # Task dependencies
