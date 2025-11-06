@@ -13,16 +13,14 @@ from etl.config import config as airflow_config
 logger = logging.getLogger("ingestion_service")
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
-    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
 app = FastAPI(title="Wildfire Ingestion Service", version="1.0.0")
 
 # Metrics
 ingest_requests_total = Counter(
-    "ingest_requests_total",
-    "Total number of ingestion requests",
-    ["outcome"]
+    "ingest_requests_total", "Total number of ingestion requests", ["outcome"]
 )
 
 
@@ -33,14 +31,20 @@ def health() -> JSONResponse:
 
 @app.get("/metrics")
 def metrics() -> PlainTextResponse:
-    return PlainTextResponse(generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+    return PlainTextResponse(
+        generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST
+    )
 
 
 @app.post("/ingest")
 def ingest(
-    area: Optional[str] = Query(default=None, description="FIRMS area bbox: lonW,latS,lonE,latN"),
+    area: Optional[str] = Query(
+        default=None, description="FIRMS area bbox: lonW,latS,lonE,latN"
+    ),
     day_range: Optional[str] = Query(default=None, description="Past N days to fetch"),
-    source: Optional[str] = Query(default=None, description="FIRMS source e.g. VIIRS_SNPP_NRT"),
+    source: Optional[str] = Query(
+        default=None, description="FIRMS source e.g. VIIRS_SNPP_NRT"
+    ),
 ) -> JSONResponse:
     try:
         # Resolve output path to a container-local data dir so Airflow can read it via bind mount
@@ -64,14 +68,10 @@ def ingest(
         saved_path = download_firms_api_csv(url=firms_url, output_file=output_path)
 
         ingest_requests_total.labels(outcome="success").inc()
-        return JSONResponse({
-            "status": "success",
-            "file_path": saved_path,
-            "url": firms_url
-        })
+        return JSONResponse(
+            {"status": "success", "file_path": saved_path, "url": firms_url}
+        )
     except Exception as e:
         logger.exception("Ingestion failed")
         ingest_requests_total.labels(outcome="error").inc()
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
-
