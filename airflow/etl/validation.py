@@ -68,7 +68,7 @@ def validate_numeric_fields(record: Dict[str, Any]) -> bool:
     for field in FLOAT_FIELDS:
         try:
             float(record[field])
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError):
             error_msg = f"Invalid numeric value for field '{field}': {record[field]}"
             logger.warning(error_msg)
             raise ValidationError(error_msg)
