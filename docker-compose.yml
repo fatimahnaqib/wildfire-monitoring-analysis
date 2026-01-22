@@ -11,9 +11,13 @@ services:
       - "8000:8000"
     environment:
       - AIRFLOW_DATA_DIR=/data
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=wildfire_data
     volumes:
       - ./airflow/data:/data
     depends_on:
+      kafka:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 

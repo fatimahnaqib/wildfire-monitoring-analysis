@@ -2,11 +2,11 @@
 Wildfire ETL Pipeline DAG.
 
 This DAG orchestrates the complete wildfire data processing pipeline:
-1. Download wildfire data from NASA FIRMS API
-2. Validate and produce data to Kafka
-3. Generate interactive map visualization
+1. Download wildfire data from NASA FIRMS API, validate, and produce to Kafka (in-memory)
+2. Generate interactive map visualization from database
 
 The pipeline runs daily and processes wildfire data for the past 3 days.
+Note: Ingestion service now handles both download and Kafka production in-memory (no CSV files).
 """
 
 from datetime import timedelta
@@ -51,7 +51,14 @@ dag = DAG(
 
 
 def call_ingestion_service(**context) -> None:
-    """Call the ingestion microservice to download the latest CSV."""
+    """Call the ingestion microservice to download, validate, and produce to Kafka.
+
+    The ingestion service now:
+    - Downloads CSV from NASA FIRMS API in memory
+    - Validates records
+    - Produces valid records directly to Kafka
+    - Returns statistics (no CSV file is written)
+    """
     params = context.get("params", {})
     url = "http://ingestion:8000/ingest"
     try:
@@ -64,20 +71,32 @@ def call_ingestion_service(**context) -> None:
             timeout=60,
         )
         response.raise_for_status()
+        result = response.json()
+        # Log statistics for monitoring
+        if "stats" in result:
+            stats = result["stats"]
+            print(
+                f"Ingestion stats: {stats['total_records']} total, "
+                f"{stats['valid_records']} valid, {stats['invalid_records']} invalid"
+            )
     except Exception as e:
         raise RuntimeError(f"Ingestion service call failed: {e}")
 
 
+# Producer service is no longer needed - ingestion service now produces directly to Kafka
+# This function is kept for backward compatibility but should not be used
 def call_producer_service(**context) -> None:
-    """Call the producer microservice to produce records to Kafka.
-    Uses the CSV file created by the ingestion service.
+    """DEPRECATED: Producer service is no longer needed.
+
+    The ingestion service now handles both downloading and producing to Kafka.
+    This task is kept for backward compatibility but should be skipped.
     """
-    url = "http://producer:8001/produce"
-    try:
-        response = requests.post(url, timeout=60)
-        response.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"Producer service call failed: {e}")
+    print(
+        "WARNING: Producer service step is deprecated. "
+        "Ingestion service now produces directly to Kafka."
+    )
+    # No-op: ingestion already produced to Kafka
+    pass
 
 
 def call_map_service(**context) -> None:
@@ -109,33 +128,37 @@ download_task = PythonOperator(
     python_callable=call_ingestion_service,
     dag=dag,
     doc_md="""
-    Download wildfire data from NASA FIRMS API.
+    Download, validate, and produce wildfire data to Kafka.
     
     This task:
-    - Fetches CSV data from NASA FIRMS API for the past 3 days
-    - Saves data to local filesystem for processing
+    - Downloads CSV data from NASA FIRMS API in memory (no file I/O)
+    - Validates each record using existing validation rules
+    - Produces valid records directly to Kafka topic 'wildfire_data'
+    - Returns statistics (total_records, valid_records, invalid_records)
     - Handles API errors and timeouts gracefully
     """,
     retries=3,
     retry_delay=timedelta(minutes=2),
 )
 
+# Kafka production is now handled by ingestion service
+# This task is deprecated but kept for backward compatibility
 kafka_task = PythonOperator(
     task_id="produce_to_kafka",
     python_callable=call_producer_service,
     dag=dag,
     doc_md="""
-    Produce validated wildfire data to Kafka topic.
+    DEPRECATED: Kafka production is now handled by ingestion service.
     
-    This task:
-    - Calls the producer microservice
-    - Reads downloaded CSV file
-    - Validates each record for data quality
-    - Produces valid records to Kafka topic 'wildfire_data'
-    - Handles validation errors and Kafka connection issues
+    This task is a no-op. The ingestion service now:
+    - Downloads CSV in memory
+    - Validates records
+    - Produces directly to Kafka
+    
+    This task is kept for workflow compatibility but does nothing.
     """,
-    retries=2,
-    retry_delay=timedelta(minutes=3),
+    retries=0,  # No retries needed for no-op
+    retry_delay=timedelta(seconds=1),
 )
 
 map_task = PythonOperator(
@@ -161,4 +184,9 @@ end_task = DummyOperator(
 )
 
 # Task dependencies
+# Note: kafka_task is now a no-op (ingestion handles Kafka production)
+# It's kept in the workflow for backward compatibility
 start_task >> download_task >> kafka_task >> map_task >> end_task
+
+# Alternative workflow without producer step (for future cleanup):
+# start_task >> download_task >> map_task >> end_task
