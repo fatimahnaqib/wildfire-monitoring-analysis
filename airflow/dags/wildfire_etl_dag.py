@@ -52,7 +52,7 @@ dag = DAG(
 
 def call_ingestion_service(**context) -> None:
     """Call the ingestion microservice to download, validate, and produce to Kafka.
-    
+
     The ingestion service now:
     - Downloads CSV from NASA FIRMS API in memory
     - Validates records
@@ -75,8 +75,10 @@ def call_ingestion_service(**context) -> None:
         # Log statistics for monitoring
         if "stats" in result:
             stats = result["stats"]
-            print(f"Ingestion stats: {stats['total_records']} total, "
-                  f"{stats['valid_records']} valid, {stats['invalid_records']} invalid")
+            print(
+                f"Ingestion stats: {stats['total_records']} total, "
+                f"{stats['valid_records']} valid, {stats['invalid_records']} invalid"
+            )
     except Exception as e:
         raise RuntimeError(f"Ingestion service call failed: {e}")
 
@@ -85,12 +87,14 @@ def call_ingestion_service(**context) -> None:
 # This function is kept for backward compatibility but should not be used
 def call_producer_service(**context) -> None:
     """DEPRECATED: Producer service is no longer needed.
-    
+
     The ingestion service now handles both downloading and producing to Kafka.
     This task is kept for backward compatibility but should be skipped.
     """
-    print("WARNING: Producer service step is deprecated. "
-          "Ingestion service now produces directly to Kafka.")
+    print(
+        "WARNING: Producer service step is deprecated. "
+        "Ingestion service now produces directly to Kafka."
+    )
     # No-op: ingestion already produced to Kafka
     pass
 
