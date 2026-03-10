@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from confluent_kafka import Consumer, Producer, KafkaError
 from etl.validation import is_valid_record
 

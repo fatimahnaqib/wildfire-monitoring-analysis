@@ -10,16 +10,13 @@ import json
 import logging
 import os
 import signal
-import sys
 import threading
-import time
 from typing import Dict, Any, Optional
 from confluent_kafka import Consumer, KafkaError
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectionError
 
 from etl.config import config as airflow_config
-from etl.validation import is_valid_record
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"

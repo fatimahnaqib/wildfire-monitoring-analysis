@@ -13,7 +13,7 @@ import signal
 import sys
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from confluent_kafka import Consumer, KafkaError
 from etl.generate_map import generate_wildfire_map
 
