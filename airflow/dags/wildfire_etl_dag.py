@@ -13,20 +13,20 @@ Key changes for event-driven architecture:
 - Airflow is no longer in the hot path - it only triggers periodic ingestion
 """
 
-from datetime import timedelta
-from typing import Dict, Any
 import os
+from datetime import timedelta
+from typing import Any, Dict
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
+from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
 
 from etl.command_producer import (
     create_command_producer,
+    send_command_and_flush,
     send_ingestion_command,
     send_map_regeneration_command,
-    send_command_and_flush,
 )
 from etl.config import config
 
@@ -76,17 +76,19 @@ def send_ingestion_command_to_kafka(**context) -> None:
     The ingestion service processes commands asynchronously via Kafka.
     """
     params = context.get("params", {})
-    
+
     # Get Kafka configuration
-    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers)
+    kafka_bootstrap = os.getenv(
+        "KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers
+    )
     ingestion_command_topic = os.getenv(
         "KAFKA_INGESTION_COMMAND_TOPIC", "wildfire.commands.ingest"
     )
-    
+
     try:
         # Create command producer
         producer = create_command_producer(kafka_bootstrap)
-        
+
         # Send ingestion command with parameters
         success = send_command_and_flush(
             producer,
@@ -98,10 +100,12 @@ def send_ingestion_command_to_kafka(**context) -> None:
             map_key=config.map_key,
             metadata={
                 "triggered_by": "airflow",
-                "dag_run_id": context.get("dag_run").run_id if context.get("dag_run") else None,
+                "dag_run_id": context.get("dag_run").run_id
+                if context.get("dag_run")
+                else None,
             },
         )
-        
+
         if success:
             print(
                 f"Ingestion command sent to Kafka topic '{ingestion_command_topic}'. "
@@ -109,9 +113,9 @@ def send_ingestion_command_to_kafka(**context) -> None:
             )
         else:
             raise RuntimeError("Failed to send ingestion command to Kafka")
-            
+
     except Exception as e:
-        raise RuntimeError(f"Failed to send ingestion command: {e}")
+        raise RuntimeError(f"Failed to send ingestion command: {e}") from e
 
 
 def send_map_regeneration_command_to_kafka(**context) -> None:
@@ -129,17 +133,19 @@ def send_map_regeneration_command_to_kafka(**context) -> None:
     - Does NOT wait for map generation to complete
     """
     params = context.get("params", {})
-    
+
     # Get Kafka configuration
-    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers)
+    kafka_bootstrap = os.getenv(
+        "KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers
+    )
     map_command_topic = os.getenv(
         "KAFKA_MAP_COMMAND_TOPIC", "wildfire.commands.map.regenerate"
     )
-    
+
     try:
         # Create command producer
         producer = create_command_producer(kafka_bootstrap)
-        
+
         # Send map regeneration command
         success = send_command_and_flush(
             producer,
@@ -150,20 +156,28 @@ def send_map_regeneration_command_to_kafka(**context) -> None:
             zoom=params.get("map_zoom", 5),
             metadata={
                 "triggered_by": "airflow",
-                "dag_run_id": context.get("dag_run").run_id if context.get("dag_run") else None,
+                "dag_run_id": context.get("dag_run").run_id
+                if context.get("dag_run")
+                else None,
             },
         )
-        
+
         if success:
             print(
                 f"Map regeneration command sent to Kafka topic '{map_command_topic}'. "
                 f"Map will be regenerated asynchronously."
             )
         else:
-            print("Warning: Failed to send map regeneration command (maps will still be auto-generated from events)")
-            
+            print(
+                "Warning: Failed to send map regeneration command "
+                "(maps will still be auto-generated from events)"
+            )
+
     except Exception as e:
-        print(f"Warning: Failed to send map regeneration command: {e} (maps will still be auto-generated from events)")
+        print(
+            f"Warning: Failed to send map regeneration command: {e} "
+            "(maps will still be auto-generated from events)"
+        )
 
 
 # Task definitions

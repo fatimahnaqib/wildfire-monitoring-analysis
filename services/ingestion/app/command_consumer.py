@@ -11,10 +11,12 @@ import logging
 import os
 import signal
 import threading
-from typing import Dict, Any, Optional
-from confluent_kafka import Consumer, KafkaError
+from typing import Any, Dict, Optional
+
 import requests
-from requests.exceptions import RequestException, Timeout, ConnectionError
+from requests.exceptions import ConnectionError, RequestException, Timeout
+
+from confluent_kafka import Consumer, KafkaError
 
 from etl.config import config as airflow_config
 

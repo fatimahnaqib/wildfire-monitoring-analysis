@@ -11,7 +11,8 @@ import os
 import signal
 import sys
 import threading
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 from confluent_kafka import Consumer, KafkaError
 import psycopg2
 from psycopg2 import OperationalError, DatabaseError, IntegrityError
@@ -35,7 +36,10 @@ class WildfireConsumer:
         # Kafka configuration
         self.kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")
         # Default to processed events topic for event-driven architecture
-        self.topic_name = os.getenv("KAFKA_TOPIC", os.getenv("KAFKA_PROCESSED_EVENTS_TOPIC", "wildfire.processed.events"))
+        self.topic_name = os.getenv(
+            "KAFKA_TOPIC",
+            os.getenv("KAFKA_PROCESSED_EVENTS_TOPIC", "wildfire.processed.events"),
+        )
         # Fallback to legacy topic if explicitly set
         if os.getenv("KAFKA_TOPIC") and os.getenv("KAFKA_TOPIC") == "wildfire_data":
             self.topic_name = "wildfire_data"

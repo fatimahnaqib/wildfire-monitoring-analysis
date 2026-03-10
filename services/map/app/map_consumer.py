@@ -14,6 +14,7 @@ import sys
 import time
 import threading
 from typing import Any, Optional
+
 from confluent_kafka import Consumer, KafkaError
 from etl.generate_map import generate_wildfire_map
 
@@ -86,7 +87,12 @@ class MapGenerationConsumer:
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self.running = False
 
-    def generate_map(self, center_lat: float = None, center_lon: float = None, zoom: int = None) -> bool:
+    def generate_map(
+        self,
+        center_lat: float = None,
+        center_lon: float = None,
+        zoom: int = None,
+    ) -> bool:
         """
         Generate a wildfire map with the specified parameters.
 
@@ -140,7 +146,11 @@ class MapGenerationConsumer:
             message_value = message.value().decode("utf-8")
             data = json.loads(message_value)
 
-            logger.debug(f"Received processed event: {data.get('latitude', 'N/A')}, {data.get('longitude', 'N/A')}")
+            logger.debug(
+                "Received processed event: %s, %s",
+                data.get("latitude", "N/A"),
+                data.get("longitude", "N/A"),
+            )
 
             # Regenerate map with default parameters
             # In a production system, you might want to:

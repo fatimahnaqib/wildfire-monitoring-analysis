@@ -9,9 +9,10 @@ Topics follow a clear naming convention:
 - wildfire.map.* - Map-related events
 """
 
-from confluent_kafka.admin import AdminClient, NewTopic
-from typing import List, Dict, Any
 import logging
+from typing import Any, Dict, List
+
+from confluent_kafka.admin import AdminClient, NewTopic
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ def create_kafka_admin_client(bootstrap_servers: str) -> AdminClient:
 
 
 def ensure_topics_exist(
-    bootstrap_servers: str, topics: Dict[str, Dict[str, Any]] = None
+    bootstrap_servers: str,
+    topics: Dict[str, Dict[str, Any]] = None,
 ) -> Dict[str, bool]:
     """
     Ensure that all required Kafka topics exist, creating them if needed.

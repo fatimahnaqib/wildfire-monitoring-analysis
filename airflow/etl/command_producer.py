@@ -7,9 +7,10 @@ allowing services to trigger actions asynchronously via events.
 
 import json
 import logging
-from typing import Dict, Any, Optional
-from confluent_kafka import Producer, KafkaError
 from datetime import datetime
+from typing import Dict, Any, Optional
+
+from confluent_kafka import KafkaError, Producer
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ def send_command_and_flush(
     command_func,
     *args,
     timeout: int = 30,
-    **kwargs
+    **kwargs,
 ) -> bool:
     """
     Send a command and flush the producer to ensure delivery.

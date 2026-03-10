@@ -165,7 +165,10 @@ def startup_event():
         generate_wildfire_map(center_lat=37.0, center_lon=-120.0, zoom=5)
         logger.info("Initial map generated at startup")
     except Exception as e:
-        logger.warning("Initial map generation at startup failed (will retry when events arrive): %s", e)
+        logger.warning(
+            "Initial map generation at startup failed (will retry when events arrive): %s",
+            e,
+        )
     start_map_consumer_background()
 
 

@@ -12,7 +12,8 @@ import os
 import signal
 import sys
 from typing import Any, Optional
-from confluent_kafka import Consumer, Producer, KafkaError
+
+from confluent_kafka import Consumer, KafkaError, Producer
 from etl.validation import is_valid_record
 
 logging.basicConfig(
@@ -125,7 +126,11 @@ class ValidationProcessor:
                 self.producer.poll(0)
                 self.valid_count += 1
 
-                logger.debug(f"Validated and produced event: {record.get('latitude', 'N/A')}, {record.get('longitude', 'N/A')}")
+                logger.debug(
+                    "Validated and produced event: %s, %s",
+                    record.get("latitude", "N/A"),
+                    record.get("longitude", "N/A"),
+                )
                 return True
             else:
                 # Invalid record - log but don't produce
