@@ -191,7 +191,11 @@ class MapGenerationConsumer:
 
             logger.info(f"Received map regeneration command: {command}")
 
-            return self.generate_map(center_lat=center_lat, center_lon=center_lon, zoom=zoom)
+            return self.generate_map(
+                center_lat=center_lat,
+                center_lon=center_lon,
+                zoom=zoom,
+            )
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON command: {e}")

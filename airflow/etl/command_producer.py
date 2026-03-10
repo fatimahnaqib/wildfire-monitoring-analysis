@@ -109,7 +109,9 @@ def send_ingestion_command(
 
         # Produce message to Kafka
         producer.produce(
-            topic=topic, value=message_value, callback=delivery_callback
+            topic=topic,
+            value=message_value,
+            callback=delivery_callback,
         )
 
         # Poll for delivery reports
@@ -170,7 +172,9 @@ def send_map_regeneration_command(
 
         # Produce message to Kafka
         producer.produce(
-            topic=topic, value=message_value, callback=delivery_callback
+            topic=topic,
+            value=message_value,
+            callback=delivery_callback,
         )
 
         # Poll for delivery reports
