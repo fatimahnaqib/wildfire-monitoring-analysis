@@ -8,7 +8,7 @@ allowing services to trigger actions asynchronously via events.
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from confluent_kafka import KafkaError, Producer
 

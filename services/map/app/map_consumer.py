@@ -11,8 +11,8 @@ import logging
 import os
 import signal
 import sys
-import time
 import threading
+import time
 from typing import Any, Optional
 
 from confluent_kafka import Consumer, KafkaError
