@@ -1,22 +1,34 @@
 """
-Wildfire ETL Pipeline DAG.
+Wildfire ETL Pipeline DAG - Event-Driven Architecture.
 
-This DAG orchestrates the complete wildfire data processing pipeline:
-1. Download wildfire data from NASA FIRMS API, validate, and produce to Kafka (in-memory)
-2. Generate interactive map visualization from database
+This DAG orchestrates the wildfire data processing pipeline using an event-driven architecture:
+1. Send ingestion command to Kafka (triggers ingestion service asynchronously)
+2. Optionally send map regeneration command (map service listens to events automatically)
 
 The pipeline runs daily and processes wildfire data for the past 3 days.
-Note: Ingestion service now handles both download and Kafka production in-memory (no CSV files).
+Key changes for event-driven architecture:
+- Airflow sends commands to Kafka topics instead of making synchronous HTTP calls
+- Services process events asynchronously without blocking Airflow
+- Map generation is triggered automatically by processed events (via map consumer)
+- Airflow is no longer in the hot path - it only triggers periodic ingestion
 """
 
+import os
 from datetime import timedelta
-from typing import Dict, Any
-import requests
+from typing import Any, Dict
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
+from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
+
+from etl.command_producer import (
+    create_command_producer,
+    send_command_and_flush,
+    send_ingestion_command,
+    send_map_regeneration_command,
+)
+from etl.config import config
 
 # Default arguments for the DAG
 default_args: Dict[str, Any] = {
@@ -50,72 +62,122 @@ dag = DAG(
 )
 
 
-def call_ingestion_service(**context) -> None:
-    """Call the ingestion microservice to download, validate, and produce to Kafka.
+def send_ingestion_command_to_kafka(**context) -> None:
+    """
+    Send an ingestion command to Kafka for event-driven processing.
 
-    The ingestion service now:
-    - Downloads CSV from NASA FIRMS API in memory
-    - Validates records
-    - Produces valid records directly to Kafka
-    - Returns statistics (no CSV file is written)
+    This function:
+    - Creates a Kafka producer
+    - Sends a command to wildfire.commands.ingest topic
+    - Does NOT wait for ingestion to complete (fully asynchronous)
+    - The ingestion service listens to this topic and processes commands
+
+    This is the key change: Airflow no longer waits for ingestion to complete.
+    The ingestion service processes commands asynchronously via Kafka.
     """
     params = context.get("params", {})
-    url = "http://ingestion:8000/ingest"
-    try:
-        response = requests.post(
-            url,
-            params={
-                "area": params.get("firms_area"),
-                "day_range": params.get("day_range"),
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
-        result = response.json()
-        # Log statistics for monitoring
-        if "stats" in result:
-            stats = result["stats"]
-            print(
-                f"Ingestion stats: {stats['total_records']} total, "
-                f"{stats['valid_records']} valid, {stats['invalid_records']} invalid"
-            )
-    except Exception as e:
-        raise RuntimeError(f"Ingestion service call failed: {e}")
 
-
-# Producer service is no longer needed - ingestion service now produces directly to Kafka
-# This function is kept for backward compatibility but should not be used
-def call_producer_service(**context) -> None:
-    """DEPRECATED: Producer service is no longer needed.
-
-    The ingestion service now handles both downloading and producing to Kafka.
-    This task is kept for backward compatibility but should be skipped.
-    """
-    print(
-        "WARNING: Producer service step is deprecated. "
-        "Ingestion service now produces directly to Kafka."
+    # Get Kafka configuration
+    kafka_bootstrap = os.getenv(
+        "KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers
     )
-    # No-op: ingestion already produced to Kafka
-    pass
+    ingestion_command_topic = os.getenv(
+        "KAFKA_INGESTION_COMMAND_TOPIC", "wildfire.commands.ingest"
+    )
 
-
-def call_map_service(**context) -> None:
-    """Call the map microservice to generate the wildfire map."""
-    params = context.get("params", {})
-    url = "http://map:8003/generate"
     try:
-        response = requests.post(
-            url,
-            params={
-                "center_lat": params.get("map_center_lat", 37.0),
-                "center_lon": params.get("map_center_lon", -120.0),
-                "zoom": params.get("map_zoom", 5),
+        # Create command producer
+        producer = create_command_producer(kafka_bootstrap)
+
+        # Send ingestion command with parameters
+        success = send_command_and_flush(
+            producer,
+            send_ingestion_command,
+            topic=ingestion_command_topic,
+            area=params.get("firms_area"),
+            day_range=params.get("day_range"),
+            source=config.source,
+            map_key=config.map_key,
+            metadata={
+                "triggered_by": "airflow",
+                "dag_run_id": context.get("dag_run").run_id
+                if context.get("dag_run")
+                else None,
             },
-            timeout=120,
         )
-        response.raise_for_status()
+
+        if success:
+            print(
+                f"Ingestion command sent to Kafka topic '{ingestion_command_topic}'. "
+                f"Processing will happen asynchronously via event-driven architecture."
+            )
+        else:
+            raise RuntimeError("Failed to send ingestion command to Kafka")
+
     except Exception as e:
-        raise RuntimeError(f"Map service call failed: {e}")
+        raise RuntimeError(f"Failed to send ingestion command: {e}") from e
+
+
+def send_map_regeneration_command_to_kafka(**context) -> None:
+    """
+    Send a map regeneration command to Kafka (optional).
+
+    Note: In the event-driven architecture, maps are automatically regenerated
+    when processed events are consumed by the map consumer. This command is
+    only needed if you want to explicitly trigger a map regeneration with
+    custom parameters.
+
+    This function:
+    - Creates a Kafka producer
+    - Sends a command to wildfire.commands.map.regenerate topic
+    - Does NOT wait for map generation to complete
+    """
+    params = context.get("params", {})
+
+    # Get Kafka configuration
+    kafka_bootstrap = os.getenv(
+        "KAFKA_BOOTSTRAP_SERVERS", config.kafka_bootstrap_servers
+    )
+    map_command_topic = os.getenv(
+        "KAFKA_MAP_COMMAND_TOPIC", "wildfire.commands.map.regenerate"
+    )
+
+    try:
+        # Create command producer
+        producer = create_command_producer(kafka_bootstrap)
+
+        # Send map regeneration command
+        success = send_command_and_flush(
+            producer,
+            send_map_regeneration_command,
+            topic=map_command_topic,
+            center_lat=params.get("map_center_lat", 37.0),
+            center_lon=params.get("map_center_lon", -120.0),
+            zoom=params.get("map_zoom", 5),
+            metadata={
+                "triggered_by": "airflow",
+                "dag_run_id": context.get("dag_run").run_id
+                if context.get("dag_run")
+                else None,
+            },
+        )
+
+        if success:
+            print(
+                f"Map regeneration command sent to Kafka topic '{map_command_topic}'. "
+                f"Map will be regenerated asynchronously."
+            )
+        else:
+            print(
+                "Warning: Failed to send map regeneration command "
+                "(maps will still be auto-generated from events)"
+            )
+
+    except Exception as e:
+        print(
+            f"Warning: Failed to send map regeneration command: {e} "
+            "(maps will still be auto-generated from events)"
+        )
 
 
 # Task definitions
@@ -123,70 +185,60 @@ start_task = DummyOperator(
     task_id="start_pipeline", dag=dag, doc_md="Start of the wildfire ETL pipeline"
 )
 
-download_task = PythonOperator(
-    task_id="download_wildfire_api_csv",
-    python_callable=call_ingestion_service,
+# Event-driven ingestion task
+ingestion_command_task = PythonOperator(
+    task_id="send_ingestion_command",
+    python_callable=send_ingestion_command_to_kafka,
     dag=dag,
     doc_md="""
-    Download, validate, and produce wildfire data to Kafka.
+    Send ingestion command to Kafka for event-driven processing.
     
     This task:
-    - Downloads CSV data from NASA FIRMS API in memory (no file I/O)
-    - Validates each record using existing validation rules
-    - Produces valid records directly to Kafka topic 'wildfire_data'
-    - Returns statistics (total_records, valid_records, invalid_records)
-    - Handles API errors and timeouts gracefully
+    - Sends a command to wildfire.commands.ingest Kafka topic
+    - Does NOT wait for ingestion to complete (fully asynchronous)
+    - The ingestion service listens to this topic and processes commands
+    - Raw events are produced to wildfire.raw.events
+    - Validation processor consumes raw events and produces to wildfire.processed.events
+    - Database consumer consumes processed events and writes to PostgreSQL
+    - Map consumer listens to processed events and regenerates maps automatically
+    
+    This is the key architectural change: Airflow is no longer in the hot path.
     """,
     retries=3,
     retry_delay=timedelta(minutes=2),
 )
 
-# Kafka production is now handled by ingestion service
-# This task is deprecated but kept for backward compatibility
-kafka_task = PythonOperator(
-    task_id="produce_to_kafka",
-    python_callable=call_producer_service,
+# Optional map regeneration command (maps are auto-generated from events)
+map_command_task = PythonOperator(
+    task_id="send_map_regeneration_command",
+    python_callable=send_map_regeneration_command_to_kafka,
     dag=dag,
     doc_md="""
-    DEPRECATED: Kafka production is now handled by ingestion service.
+    Optionally send map regeneration command to Kafka.
     
-    This task is a no-op. The ingestion service now:
-    - Downloads CSV in memory
-    - Validates records
-    - Produces directly to Kafka
-    
-    This task is kept for workflow compatibility but does nothing.
-    """,
-    retries=0,  # No retries needed for no-op
-    retry_delay=timedelta(seconds=1),
-)
-
-map_task = PythonOperator(
-    task_id="generate_wildfire_map",
-    python_callable=call_map_service,
-    dag=dag,
-    doc_md="""
-    Generate interactive wildfire map from database data.
+    Note: Maps are automatically regenerated when processed events are consumed
+    by the map consumer. This task is only needed for explicit regeneration with
+    custom parameters.
     
     This task:
-    - Calls the map microservice
-    - Connects to PostgreSQL database
-    - Fetches wildfire events data
-    - Creates interactive Folium map with markers
-    - Saves HTML map to dashboard directory
+    - Sends a command to wildfire.commands.map.regenerate Kafka topic
+    - Does NOT wait for map generation to complete
+    - The map consumer listens to this topic and processes commands
     """,
-    retries=2,
-    retry_delay=timedelta(minutes=2),
+    retries=1,
+    retry_delay=timedelta(minutes=1),
 )
 
 end_task = DummyOperator(
     task_id="end_pipeline", dag=dag, doc_md="End of the wildfire ETL pipeline"
 )
 
-# Task dependencies
-# Note: kafka_task is now a no-op (ingestion handles Kafka production)
-# It's kept in the workflow for backward compatibility
-start_task >> download_task >> kafka_task >> map_task >> end_task
+# Task dependencies for event-driven architecture
+# Airflow only sends commands - it doesn't wait for processing to complete
+start_task >> ingestion_command_task >> map_command_task >> end_task
 
-# Alternative workflow without producer step (for future cleanup):
-# start_task >> download_task >> map_task >> end_task
+# Note: The actual processing happens asynchronously:
+# 1. Ingestion command → Ingestion service → Raw events → Validation processor → Processed events
+# 2. Processed events → Database consumer (writes to PostgreSQL)
+# 3. Processed events → Map consumer (regenerates maps automatically)
+# 4. Map command (optional) → Map consumer (explicit regeneration)

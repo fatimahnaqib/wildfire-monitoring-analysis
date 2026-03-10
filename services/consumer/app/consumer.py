@@ -10,7 +10,9 @@ import logging
 import os
 import signal
 import sys
-from typing import Dict, Any, Optional
+import threading
+from typing import Any, Dict, Optional
+
 from confluent_kafka import Consumer, KafkaError
 import psycopg2
 from psycopg2 import OperationalError, DatabaseError, IntegrityError
@@ -33,7 +35,14 @@ class WildfireConsumer:
         """Initialize the consumer with configuration from environment variables."""
         # Kafka configuration
         self.kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")
-        self.topic_name = os.getenv("KAFKA_TOPIC", "wildfire_data")
+        # Default to processed events topic for event-driven architecture
+        self.topic_name = os.getenv(
+            "KAFKA_TOPIC",
+            os.getenv("KAFKA_PROCESSED_EVENTS_TOPIC", "wildfire.processed.events"),
+        )
+        # Fallback to legacy topic if explicitly set
+        if os.getenv("KAFKA_TOPIC") and os.getenv("KAFKA_TOPIC") == "wildfire_data":
+            self.topic_name = "wildfire_data"
         self.group_id = os.getenv("KAFKA_GROUP_ID", "wildfire_group")
 
         # PostgreSQL configuration
@@ -59,9 +68,17 @@ class WildfireConsumer:
         self.consumer = None
         self.running = False
 
-        # Setup signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Setup signal handlers for graceful shutdown (only valid in main thread)
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self) -> None:
+        try:
+            if threading.current_thread() is not threading.main_thread():
+                return
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except (ValueError, RuntimeError) as e:
+            logger.debug("Skipping signal handler registration: %s", e)
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully."""

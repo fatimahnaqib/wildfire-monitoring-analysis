@@ -10,26 +10,35 @@ The pipeline runs as an Airflow DAG that orchestrates microservices for ingestio
 
 ## Architecture
 
+The pipeline is **event-driven**: Airflow sends commands to Kafka and does not wait for processing. Services react to events asynchronously.
+
 ```
-NASA FIRMS API
-    ↓
-Ingestion Service (downloads CSV)
-    ↓
-Producer Service (validates → Kafka)
-    ↓
-Consumer Service (Kafka → PostgreSQL)
-    ↓
-Map Service (PostgreSQL → Folium HTML)
+                    Kafka (event bus)
+    ┌───────────────────────────────────────────────────┐
+    │  wildfire.commands.ingest   wildfire.raw.events    │
+    │  wildfire.processed.events wildfire.commands...   │
+    └───────────────────────────────────────────────────┘
+         ↑              ↑              ↑              ↑
+         │              │              │              │
+    Airflow DAG    Ingestion      Validation    Consumer /
+    (sends         (command →     (raw →        Map
+     commands)     raw events)    processed)   (→ DB / map)
 ```
+
+**Flow:**
+1. **Airflow** sends an ingestion command to `wildfire.commands.ingest` (and optionally a map command). It does **not** call services over HTTP or wait for completion.
+2. **Ingestion service** consumes commands, downloads from NASA FIRMS API, and produces **raw** events to `wildfire.raw.events`.
+3. **Validation processor** consumes raw events, validates them, and produces to `wildfire.processed.events`.
+4. **Consumer service** consumes processed events and writes to PostgreSQL.
+5. **Map service** runs a map consumer that listens to processed events (and map commands) and regenerates the Folium HTML map.
 
 **Components:**
-- **Airflow**: Orchestrates the daily pipeline via DAG
-- **FastAPI Services**: Four microservices handling ingestion, production, consumption, and visualization
-- **Kafka**: Streams validated records (KRaft mode, no Zookeeper)
-- **PostgreSQL**: Stores historical fire events with deduplication
-- **Standalone Consumer**: Alternative Kafka consumer that auto-creates topics
-
-The pipeline is event-driven. Airflow triggers ingestion, which writes CSV to shared volume. Producer reads CSV, validates records, publishes to Kafka. Consumer processes messages and inserts into PostgreSQL. Map service queries the database and generates HTML maps.
+- **Airflow**: Sends commands to Kafka on a schedule; not in the hot path
+- **Kafka**: Central event bus (KRaft mode); topics for commands and events
+- **kafka-topics-init**: One-off service that creates all required topics after Kafka is healthy
+- **Ingestion, Consumer, Map**: FastAPI services with Kafka consumers for event-driven processing
+- **Validation processor**: Dedicated service that validates raw events and produces processed events
+- **PostgreSQL**: Stores wildfire events with deduplication
 
 ## Setup
 
@@ -42,18 +51,26 @@ The pipeline is event-driven. Airflow triggers ingestion, which writes CSV to sh
 ```bash
 git clone <repo-url>
 cd wildfire-monitoring-analysis
-docker-compose up --build
+docker compose up -d --build
 ```
 
-Services start in dependency order (PostgreSQL → Kafka → Microservices → Airflow).
+**Automated setup (no manual steps):**
 
-**Initial Setup:**
+When you run `docker compose up -d`, the following are handled automatically:
 
-The `airflow-init` service creates the admin user. If login fails:
+- **Kafka topics** – The `kafka-topics-init` service runs once after Kafka is healthy and creates all event-driven topics (`wildfire.commands.ingest`, `wildfire.raw.events`, `wildfire.processed.events`, `wildfire.commands.map.regenerate`, and legacy `wildfire_data`). Ingestion, consumer, map, and Airflow start only after topics exist.
+- **Validation processor** – The `validation-processor` service runs continuously and consumes raw events from Kafka, validates them, and produces processed events. No need to start it manually.
+- **Event-driven defaults** – The consumer is configured to read from `wildfire.processed.events`; ingestion and map services use the correct Kafka topic env vars for the event-driven pipeline.
+
+You do **not** need to run any manual Kafka topic creation or validation-processor commands for normal operation.
+
+**Initial setup (one-time):**
+
+Run the Airflow DB init and create the admin user once (e.g. if the UI login fails):
 
 ```bash
-docker-compose run --rm airflow-init
-docker-compose restart airflow-webserver
+docker compose run --rm airflow-init
+docker compose restart airflow-webserver
 ```
 
 **Access:**
@@ -70,7 +87,7 @@ This is an example of the map generated from recent wildfire detection data:
 
 ![Wildfire Map Example](airflow/dashboard/wildfire_map.png)
 
-The map is interactive—you can zoom, pan, switch between OpenStreetMap and satellite tile layers, and click markers for fire details (date, brightness, coordinates). Maps are regenerated each time the DAG runs, so the visualization updates with the latest data from the database.
+The map is interactive—you can zoom, pan, switch between OpenStreetMap and satellite tile layers, and click markers for fire details (date, brightness, coordinates). Maps are regenerated when new processed events arrive (map consumer) and when the DAG sends a map command, so the visualization stays up to date with the database.
 
 ## Running the Pipeline
 
@@ -79,48 +96,55 @@ The map is interactive—you can zoom, pan, switch between OpenStreetMap and sat
 **Manual:** Trigger via Airflow UI or:
 
 ```bash
-docker-compose exec airflow-webserver airflow dags trigger wildfire_etl_pipeline
+docker compose exec airflow-webserver airflow dags trigger wildfire_etl_pipeline
 ```
 
-**DAG Tasks:**
-1. `download_wildfire_api_csv` - Calls ingestion service, downloads NASA data
-2. `produce_to_kafka` - Validates CSV, publishes to Kafka topic `wildfire_data`
-3. `generate_wildfire_map` - Queries PostgreSQL, generates Folium map
+**DAG Tasks (event-driven):**
+1. `send_ingestion_command` – Sends a command to Kafka topic `wildfire.commands.ingest`; ingestion service processes it asynchronously
+2. `send_map_regeneration_command` – Sends a command to `wildfire.commands.map.regenerate` (optional; maps also auto-update from processed events)
+3. Airflow does **not** call ingestion or map over HTTP; processing is driven by Kafka events
 
 ## Project Structure
 
 ```
 wildfire-monitoring-analysis/
 ├── airflow/
-│   ├── dags/wildfire_etl_dag.py    # Main DAG definition
+│   ├── dags/wildfire_etl_dag.py    # DAG: sends commands to Kafka
+│   ├── scripts/
+│   │   └── ensure_kafka_topics.py  # Topic creation (used by kafka-topics-init)
 │   ├── etl/                        # Shared ETL modules
 │   │   ├── config.py               # Environment/config management
-│   │   ├── download.py             # NASA API client
 │   │   ├── validation.py           # Record validation logic
-│   │   ├── kafka_producer.py       # Kafka producer
-│   │   └── generate_map.py        # Folium map generation
-│   ├── data/                       # Downloaded CSVs
+│   │   ├── kafka_topics.py         # Topic definitions and creation
+│   │   ├── command_producer.py     # Send ingestion/map commands to Kafka
+│   │   ├── kafka_producer.py       # Kafka producer (legacy)
+│   │   └── generate_map.py         # Folium map generation
+│   ├── data/                       # Optional downloaded data
 │   └── dashboard/                  # Generated HTML maps
 │
-├── services/                        # FastAPI microservices
-│   ├── ingestion/app/main.py       # NASA download endpoint
-│   ├── producer/app/main.py        # Kafka producer endpoint
-│   ├── consumer/app/main.py         # Kafka consumer + FastAPI
-│   └── map/app/main.py             # Map generation endpoint
+├── services/
+│   ├── ingestion/app/              # NASA download + command consumer
+│   │   ├── main.py                 # FastAPI + /ingest (HTTP)
+│   │   └── command_consumer.py    # Kafka: commands → raw events
+│   ├── producer/                   # Legacy HTTP producer (optional)
+│   ├── consumer/app/               # Processed events → PostgreSQL
+│   │   ├── main.py                 # FastAPI + Kafka consumer
+│   │   └── validation_processor.py # Raw → processed (also run as container)
+│   └── map/app/                    # Map API + event-driven map consumer
+│       ├── main.py                 # FastAPI + /generate, /map
+│       └── map_consumer.py         # Kafka: events/commands → regenerate map
 │
-├── kafka_consumer/                  # Standalone consumer
-│   ├── consumer.py                 # Kafka consumer impl
-│   └── create_topic.py             # Topic creation utility
-│
-├── postgres/init/init.sql           # Database schema
-└── docker-compose.yml              # Service definitions
+├── kafka_consumer/                 # Standalone consumer (optional)
+├── postgres/init/init.sql          # Database schema
+├── docs/TESTING_EVENT_DRIVEN_WORKFLOW.md  # Testing guide
+└── docker-compose.yml              # Includes kafka-topics-init, validation-processor
 ```
 
 **Design Notes:**
-- ETL modules in `airflow/etl/` are copied into service containers for code reuse
-- Services share volumes for CSV data (`./airflow/data`) and maps (`./airflow/dashboard`)
-- Consumer service runs consumer in background thread alongside FastAPI
-- All services expose `/health` and `/metrics` endpoints
+- Event-driven: Airflow publishes commands to Kafka; ingestion, validation, consumer, and map react to events
+- `kafka-topics-init` creates topics once; `validation-processor` runs as a separate service
+- Ingestion and map services run Kafka consumers in the background alongside FastAPI
+- All services expose `/health` and `/metrics`
 
 ## API Usage
 
@@ -152,9 +176,9 @@ Prometheus metrics at `/metrics` on each service. Tracks request counts, process
 
 **Environment Variables** (set in `docker-compose.yml`):
 
-- `FIRMS_AREA`: Bounding box `lonW,latS,lonE,latN` (default: California)
-- `FIRMS_DAY_RANGE`: Historical days to fetch (default: `3`)
-- `KAFKA_TOPIC`: Topic name (default: `wildfire_data`)
+- `FIRMS_AREA`, `FIRMS_DAY_RANGE`: NASA API region and lookback
+- `KAFKA_TOPIC`: Consumer reads from `wildfire.processed.events` in event-driven mode
+- `KAFKA_INGESTION_COMMAND_TOPIC`, `KAFKA_RAW_EVENTS_TOPIC`, `KAFKA_PROCESSED_EVENTS_TOPIC`, `KAFKA_MAP_COMMAND_TOPIC`: Event-driven topic names
 - `POSTGRES_*`: Database credentials
 
 **DAG Parameters** (editable in Airflow UI):
@@ -184,43 +208,46 @@ Unique constraint on `(latitude, longitude, acq_date, acq_time, satellite)`. Dup
 
 **Validation Rules:**
 
-Records must have all required fields, numeric fields must parse to float, enum fields must match valid values. Invalid records are logged and skipped during Kafka production.
+Records must have all required fields, numeric fields must parse to float, enum fields must match valid values. The **validation processor** consumes raw events and produces only valid records to `wildfire.processed.events`; invalid records are logged and skipped.
 
 ## Development
 
 **Rebuilding Services:**
 
-After changing ETL code, rebuild affected services:
+After changing ETL or service code, rebuild and restart:
 
 ```bash
-docker-compose build ingestion producer consumer map
-docker-compose up -d
+docker compose build ingestion producer consumer map validation-processor
+docker compose up -d
 ```
 
 **Viewing Logs:**
 
 ```bash
-docker-compose logs -f <service-name>
-docker-compose logs -f airflow-webserver
+docker compose logs -f <service-name>
+docker compose logs -f airflow-webserver
+docker compose logs -f validation-processor
 ```
 
 **Database Access:**
 
 ```bash
-docker-compose exec postgres psql -U airflow -d wildfire_db
+docker compose exec postgres psql -U airflow -d wildfire_db
 ```
 
 **Kafka Topics:**
 
 ```bash
-# List topics
-docker-compose exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092
+# List topics (event-driven + legacy)
+docker compose exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092
 
-# Consume messages
-docker-compose exec kafka kafka-console-consumer.sh \
+# Consume commands or events
+docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 \
-  --topic wildfire_data \
-  --from-beginning
+  --topic wildfire.commands.ingest --from-beginning
+docker compose exec kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic wildfire.processed.events --from-beginning
 ```
 
 **Local Development:**
@@ -234,33 +261,33 @@ Services can run locally, but you'll need:
 
 **Airflow login fails:**
 ```bash
-docker-compose run --rm airflow-init
-docker-compose restart airflow-webserver
+docker compose run --rm airflow-init
+docker compose restart airflow-webserver
 ```
 
 **Services won't start:**
-Check dependencies are healthy:
+Check dependencies and init order (e.g. `kafka-topics-init` must complete before ingestion/consumer/map/airflow):
 ```bash
-docker-compose ps
-docker-compose logs postgres
-docker-compose logs kafka
+docker compose ps
+docker compose logs postgres
+docker compose logs kafka
+docker compose logs kafka-topics-init
 ```
 
 **No data in database:**
-- NASA API may have no recent fires in the region
-- Check ingestion service logs for API errors
-- Verify CSV file exists: `ls airflow/data/wildfire_api_data.csv`
-- Query Kafka to see if messages are being produced
+- Trigger the DAG (sends ingestion command); processing is asynchronous
+- Check ingestion service logs (command consumer) and validation-processor logs
+- Verify events in Kafka: `wildfire.raw.events`, `wildfire.processed.events`
+- Consumer reads from `wildfire.processed.events`; check consumer `/stats` and logs
 
-**Map generation fails:**
-- Verify database has records: `SELECT COUNT(*) FROM wildfire_events;`
-- Check map service can connect to PostgreSQL
-- View map service logs for Folium errors
+**Map not created / not updating:**
+- The map file is created **on map service startup** (initial empty or current-DB map) and when the map consumer receives Kafka events or a map command.
+- If the map file is missing: restart the map service (`docker compose restart map`) so it runs startup map generation again, or call the API once: `curl -X POST "http://localhost:8003/generate"`.
+- After the first ingestion run, the map consumer will regenerate the map when processed events arrive. Check map service logs for "Map consumer" and "Generating map".
 
 **Kafka connection issues:**
 - Kafka uses KRaft mode (no Zookeeper)
-- Check health: `docker-compose ps kafka`
-- Verify topic exists and has partitions
+- Ensure topics exist: `kafka-topics-init` runs automatically on `docker compose up -d`
 - Check consumer group lag: consumer service `/stats` endpoint
 
 ## Stack
@@ -280,7 +307,7 @@ docker-compose logs kafka
 - **Default region**: California bounding box; adjust via DAG params
 - **Data retention**: No automatic cleanup; all records persist
 - **KRaft mode**: Kafka runs without Zookeeper for simplicity
-- **Validation**: Multi-layer validation (producer validates before Kafka, consumer validates before DB)
+- **Validation**: Validation processor consumes raw events and produces only valid records to `wildfire.processed.events`
 - **Error handling**: Services retry with exponential backoff; failed records are logged but don't stop pipeline
 
 ## Contributing

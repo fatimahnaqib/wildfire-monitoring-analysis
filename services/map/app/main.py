@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+import threading
 from typing import Union
 
 from fastapi import FastAPI, Query
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
 from etl.generate_map import generate_wildfire_map
+from app.map_consumer import MapGenerationConsumer
 
 
 logger = logging.getLogger("map_service")
@@ -26,6 +28,31 @@ map_requests_total = Counter(
 map_generation_time = Counter(
     "map_generation_seconds_total", "Total time spent generating maps"
 )
+
+# Global map consumer instance
+map_consumer_thread = None
+map_consumer_instance = None
+
+
+def start_map_consumer_background():
+    """Start the map consumer in a background thread for event-driven map generation."""
+    global map_consumer_thread, map_consumer_instance
+
+    if map_consumer_thread and map_consumer_thread.is_alive():
+        logger.info("Map consumer already running")
+        return
+
+    def run_consumer():
+        global map_consumer_instance
+        try:
+            map_consumer_instance = MapGenerationConsumer()
+            map_consumer_instance.consume_messages()
+        except Exception as e:
+            logger.error(f"Map consumer error: {e}")
+
+    map_consumer_thread = threading.Thread(target=run_consumer, daemon=True)
+    map_consumer_thread.start()
+    logger.info("Map consumer started in background thread")
 
 
 @app.get("/health")
@@ -127,3 +154,27 @@ def generate_map(
         logger.exception("Map generation failed")
         map_requests_total.labels(outcome="error").inc()
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.on_event("startup")
+def startup_event():
+    """Start the map consumer and ensure initial map file exists."""
+    logger.info("Starting map service with event-driven map consumer...")
+    # Generate map once on startup so the file exists (empty or with current DB data)
+    try:
+        generate_wildfire_map(center_lat=37.0, center_lon=-120.0, zoom=5)
+        logger.info("Initial map generated at startup")
+    except Exception as e:
+        logger.warning(
+            "Initial map generation at startup failed (will retry when events arrive): %s",
+            e,
+        )
+    start_map_consumer_background()
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Stop the map consumer when the service shuts down."""
+    logger.info("Stopping map service...")
+    if map_consumer_instance:
+        map_consumer_instance.running = False
