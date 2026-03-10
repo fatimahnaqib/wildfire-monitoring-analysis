@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import io
+import threading
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, Query
@@ -14,6 +15,7 @@ from requests.exceptions import RequestException, Timeout, ConnectionError
 
 from etl.config import config as airflow_config
 from etl.validation import is_valid_record
+from app.command_consumer import IngestionCommandConsumer
 
 
 logger = logging.getLogger("ingestion_service")
@@ -32,6 +34,10 @@ ingest_records_total = Counter(
     "ingest_records_total", "Total number of records processed", ["status"]
 )
 
+# Global command consumer instance
+command_consumer_thread = None
+command_consumer_instance = None
+
 
 @app.get("/health")
 def health() -> JSONResponse:
@@ -43,6 +49,44 @@ def metrics() -> PlainTextResponse:
     return PlainTextResponse(
         generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST
     )
+
+
+def start_command_consumer_background():
+    """Start the command consumer in a background thread for event-driven ingestion."""
+    global command_consumer_thread, command_consumer_instance
+
+    if command_consumer_thread and command_consumer_thread.is_alive():
+        logger.info("Command consumer already running")
+        return
+
+    def run_consumer():
+        global command_consumer_instance
+        try:
+            # Create Kafka producer for publishing raw events
+            producer = create_kafka_producer()
+            command_consumer_instance = IngestionCommandConsumer(producer)
+            command_consumer_instance.consume_messages()
+        except Exception as e:
+            logger.error(f"Command consumer error: {e}")
+
+    command_consumer_thread = threading.Thread(target=run_consumer, daemon=True)
+    command_consumer_thread.start()
+    logger.info("Command consumer started in background thread")
+
+
+@app.on_event("startup")
+def startup_event():
+    """Start the command consumer when the service starts."""
+    logger.info("Starting ingestion service with event-driven command consumer...")
+    start_command_consumer_background()
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Stop the command consumer when the service shuts down."""
+    logger.info("Stopping ingestion service...")
+    if command_consumer_instance:
+        command_consumer_instance.running = False
 
 
 def download_csv_in_memory(url: str, timeout: int = 30) -> str:

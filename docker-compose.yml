@@ -1,5 +1,24 @@
 services:
   # -------------------------------
+  # Kafka topics init (run once after Kafka is healthy)
+  # -------------------------------
+  kafka-topics-init:
+    build:
+      context: .
+      dockerfile: ./airflow/Dockerfile
+    container_name: kafka_topics_init
+    command: ["python", "/opt/airflow/scripts/ensure_kafka_topics.py"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PYTHONPATH: /opt/airflow
+    volumes:
+      - ./airflow:/opt/airflow
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+
+  # -------------------------------
   # Ingestion Service (NASA FIRMS fetch)
   # -------------------------------
   ingestion:
@@ -13,6 +32,8 @@ services:
       - AIRFLOW_DATA_DIR=/data
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - KAFKA_TOPIC=wildfire_data
+      - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
+      - KAFKA_RAW_EVENTS_TOPIC=wildfire.raw.events
     volumes:
       - ./airflow/data:/data
     depends_on:
@@ -20,6 +41,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
 
   # -------------------------------
   # Producer Service (Kafka producer)
@@ -44,6 +67,28 @@ services:
         condition: service_healthy
 
   # -------------------------------
+  # Validation Processor (raw events -> processed events)
+  # -------------------------------
+  validation-processor:
+    build:
+      context: .
+      dockerfile: ./airflow/Dockerfile
+    container_name: wildfire_validation_processor
+    command: ["python", "-m", "app.validation_processor"]
+    environment:
+      PYTHONPATH: /opt/airflow:/opt/consumer
+      KAFKA_BROKER: kafka:9092
+      KAFKA_RAW_EVENTS_TOPIC: wildfire.raw.events
+      KAFKA_PROCESSED_EVENTS_TOPIC: wildfire.processed.events
+    volumes:
+      - ./airflow:/opt/airflow
+      - ./services/consumer:/opt/consumer
+    depends_on:
+      kafka-topics-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # -------------------------------
   # Consumer Service (Kafka consumer with health/metrics)
   # -------------------------------
   consumer:
@@ -55,7 +100,7 @@ services:
       - "8002:8002"
     environment:
       - KAFKA_BROKER=kafka:9092
-      - KAFKA_TOPIC=wildfire_data
+      - KAFKA_TOPIC=wildfire.processed.events
       - KAFKA_GROUP_ID=wildfire_group
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -65,6 +110,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
 
@@ -85,11 +132,18 @@ services:
       - POSTGRES_USER=airflow
       - POSTGRES_PASSWORD=airflow
       - AIRFLOW_DASHBOARD_DIR=/dashboard
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_PROCESSED_EVENTS_TOPIC=wildfire.processed.events
+      - KAFKA_MAP_COMMAND_TOPIC=wildfire.commands.map.regenerate
     volumes:
       - ./airflow/dashboard:/dashboard
     depends_on:
       postgres:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
 
   # -------------------------------
   # PostgreSQL for Airflow & Wildfire DB
@@ -157,11 +211,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflowdb
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: True
       PYTHONPATH: /opt/airflow
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     volumes:
       - ./airflow:/opt/airflow
       - ./airflow/requirements.txt:/requirements.txt

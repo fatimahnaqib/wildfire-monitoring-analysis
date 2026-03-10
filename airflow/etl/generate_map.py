@@ -118,8 +118,22 @@ def create_base_map(
     try:
         # Create map with custom tiles
         map_obj = folium.Map(
-            location=[center_lat, center_lon], zoom_start=zoom, tiles="OpenStreetMap"
+            location=[center_lat, center_lon],
+            zoom_start=zoom,
+            tiles="OpenStreetMap",
+            width="100%",
+            height="100%",
         )
+
+        # Ensure the map fills the viewport when opened as a standalone HTML file.
+        # Folium uses a div with class "folium-map" for the Leaflet container.
+        map_css = """
+        <style>
+          html, body { height: 100%; margin: 0; padding: 0; }
+          .folium-map { width: 100%; height: 100vh; }
+        </style>
+        """
+        map_obj.get_root().header.add_child(folium.Element(map_css))
 
         # Add additional tile layers
         folium.TileLayer(
@@ -128,10 +142,8 @@ def create_base_map(
             name="Satellite",
             overlay=False,
             control=True,
+            show=False,
         ).add_to(map_obj)
-
-        # Add layer control
-        folium.LayerControl().add_to(map_obj)
 
         logger.info(f"Created base map centered at ({center_lat}, {center_lon})")
         return map_obj
@@ -193,6 +205,7 @@ def add_wildfire_markers(map_obj: folium.Map, df: pd.DataFrame) -> folium.Map:
                     radius=radius,
                     color=color,
                     fill=True,
+                    fill_color=color,
                     fill_opacity=0.7,
                     popup=folium.Popup(popup_content, max_width=200),
                     tooltip=f"Brightness: {brightness:.1f}K",
@@ -213,6 +226,40 @@ def add_wildfire_markers(map_obj: folium.Map, df: pd.DataFrame) -> folium.Map:
         error_msg = f"Error adding wildfire markers: {e}"
         logger.error(error_msg)
         raise MapGenerationError(error_msg) from e
+
+
+def add_map_legend(map_obj: folium.Map) -> folium.Map:
+    try:
+        legend_html = """
+        <div style="
+            position: fixed;
+            bottom: 24px;
+            left: 24px;
+            z-index: 9999;
+            background: rgba(255, 255, 255, 0.92);
+            padding: 10px 12px;
+            border-radius: 10px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+            font-size: 13px;
+            line-height: 1.25;
+            max-width: 260px;
+        ">
+            <div style="font-weight: 700; margin-bottom: 8px;">Wildfire intensity</div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                <span style="width:10px; height:10px; border-radius:50%; background:#ff0000; display:inline-block;"></span>
+                <span>High (&gt; 330K)</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="width:10px; height:10px; border-radius:50%; background:#ffa500; display:inline-block;"></span>
+                <span>Medium (≤ 330K)</span>
+            </div>
+        </div>
+        """
+        map_obj.get_root().html.add_child(folium.Element(legend_html))
+        return map_obj
+    except Exception as e:
+        logger.warning("Failed to add legend: %s", e)
+        return map_obj
 
 
 def save_map_to_file(map_obj: folium.Map, output_path: str) -> str:
@@ -295,6 +342,13 @@ def generate_wildfire_map(
 
         # Add wildfire markers
         map_obj = add_wildfire_markers(map_obj, df)
+
+        # Add legend for quick interpretation
+        map_obj = add_map_legend(map_obj)
+
+        # Add layer control after overlays are created, so the generated JS
+        # references existing layer variables (avoids ReferenceError in browser).
+        folium.LayerControl(collapsed=False).add_to(map_obj)
 
         # Save map to file
         saved_path = save_map_to_file(map_obj, output_file)
