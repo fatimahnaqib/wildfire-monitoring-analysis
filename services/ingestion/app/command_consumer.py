@@ -353,4 +353,3 @@ class IngestionCommandConsumer:
             if self.consumer:
                 self.consumer.close()
                 logger.info("Kafka consumer closed")
-

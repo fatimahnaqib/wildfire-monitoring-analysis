@@ -125,7 +125,9 @@ def ensure_topics_exist(
 
     # Create all topics at once
     if topics_to_create:
-        create_futures = admin_client.create_topics([topic for _, topic in topics_to_create])
+        create_futures = admin_client.create_topics(
+            [topic for _, topic in topics_to_create]
+        )
 
         for topic_name, future in create_futures.items():
             try:
@@ -166,4 +168,3 @@ if __name__ == "__main__":
     for topic, success in results.items():
         status = "✓" if success else "✗"
         logger.info(f"{status} {topic}")
-

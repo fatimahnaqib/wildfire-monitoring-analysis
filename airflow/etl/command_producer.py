@@ -220,4 +220,3 @@ def send_command_and_flush(
     except Exception as e:
         logger.error(f"Error sending command and flushing: {e}")
         return False
-
