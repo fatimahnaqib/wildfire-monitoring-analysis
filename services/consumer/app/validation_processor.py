@@ -40,7 +40,9 @@ class ValidationProcessor:
     def __init__(self):
         """Initialize the validation processor with configuration from environment variables."""
         # Kafka configuration
-        self.kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")
+        self.kafka_broker = os.getenv(
+            "KAFKA_BROKER", "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+        )
         self.raw_events_topic = os.getenv(
             "KAFKA_RAW_EVENTS_TOPIC", "wildfire.raw.events"
         )

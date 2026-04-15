@@ -30,7 +30,8 @@ class WildfireConfig:
 
         # Kafka configuration
         self.kafka_bootstrap_servers = os.getenv(
-            "KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"
+            "KAFKA_BOOTSTRAP_SERVERS",
+            "kafka-1:9092,kafka-2:9092,kafka-3:9092",
         )
         self.kafka_topic = os.getenv("KAFKA_TOPIC", "wildfire_data")
 
@@ -40,6 +41,28 @@ class WildfireConfig:
         self.postgres_db = os.getenv("POSTGRES_DB", "wildfire_db")
         self.postgres_user = os.getenv("POSTGRES_USER", "airflow")
         self.postgres_password = os.getenv("POSTGRES_PASSWORD", "airflow")
+
+        # OpenStreetMap tile policy (browser tiles cannot set User-Agent; optional HTTP proxy
+        # on the map service adds Referer + app User-Agent on server-to-OSM requests).
+        self.osm_tile_use_proxy = os.getenv(
+            "OSM_TILE_USE_PROXY", "true"
+        ).lower() in ("1", "true", "yes")
+        self.map_public_base_url = os.getenv("MAP_PUBLIC_BASE_URL", "").rstrip("/")
+        self.osm_http_user_agent = os.getenv(
+            "OSM_HTTP_USER_AGENT",
+            "WildfireMonitoring/1.0 (+https://operations.osmfoundation.org/policies/tiles/)",
+        )
+        # Fallback when the tile proxy cannot use the browser's Referer/Origin header.
+        self.osm_upstream_tile_referer = os.getenv(
+            "OSM_UPSTREAM_REFERER",
+            self.map_public_base_url or "https://www.openstreetmap.org/",
+        )
+        self.osm_referrer_meta_policy = os.getenv(
+            "MAP_REFERRER_META_POLICY", "strict-origin-when-cross-origin"
+        )
+        self.osm_leaflet_tile_referrer_policy = os.getenv(
+            "OSM_LEAFLET_REFERRER_POLICY", "strict-origin-when-cross-origin"
+        )
 
         # Create directories
         self._create_directories()
@@ -71,6 +94,25 @@ class WildfireConfig:
     def map_output_file(self) -> str:
         """Get the map output HTML file path."""
         return os.path.join(self.dashboard_dir, "wildfire_map.html")
+
+    @property
+    def osm_raster_tile_url_template(self) -> str:
+        """
+        Leaflet tile URL for the OSM basemap.
+
+        When OSM_TILE_USE_PROXY is true, uses a root-relative path so the browser
+        requests tiles from this app; the map service proxies to tile.openstreetmap.org
+        with policy-compliant Referer and User-Agent headers.
+        """
+        if self.osm_tile_use_proxy:
+            # Root-relative URLs work for pages served by the map app, but break when
+            # the HTML is opened as a local file (file://...). If MAP_PUBLIC_BASE_URL is
+            # set (recommended in docker-compose), bake an absolute tile URL so the saved
+            # HTML still loads tiles as long as the map service is reachable.
+            if self.map_public_base_url:
+                return f"{self.map_public_base_url}/osm-tiles/{{z}}/{{x}}/{{y}}.png"
+            return "/osm-tiles/{z}/{x}/{y}.png"
+        return "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 
     @property
     def postgres_connection_string(self) -> str:

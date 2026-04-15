@@ -1,13 +1,21 @@
-import os
 import logging
-import time
+import os
 import threading
-from typing import Union
+import time
+import urllib.error
+import urllib.request
+from typing import Dict, Union
 
-from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
+from etl.config import config as wf_config
 from etl.generate_map import generate_wildfire_map
 from app.map_consumer import MapGenerationConsumer
 
@@ -19,6 +27,10 @@ logging.basicConfig(
 )
 
 app = FastAPI(title="Wildfire Map Service", version="1.0.0")
+
+_HTML_REFERRER_HEADERS: Dict[str, str] = {
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
 
 # Metrics
 map_requests_total = Counter(
@@ -67,6 +79,54 @@ def metrics() -> PlainTextResponse:
     )
 
 
+@app.get("/osm-tiles/{z:int}/{x:int}/{y:int}.png", response_class=Response)
+def proxy_osm_raster_tile(request: Request, z: int, x: int, y: int) -> Response:
+    """
+    Proxy OSM raster tiles with policy-compliant Referer and User-Agent.
+
+    Browser tile requests cannot set a custom User-Agent; this endpoint fetches
+    tile.openstreetmap.org server-side with headers required by OSM operations.
+    """
+    if not (0 <= z <= 19):
+        return Response(status_code=400)
+    url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    upstream_referer = (
+        request.headers.get("referer")
+        or request.headers.get("origin")
+        or wf_config.osm_upstream_tile_referer
+    )
+    # Some user agents send Origin: null (e.g. file:// pages). OSM expects a real Referer.
+    if not upstream_referer or upstream_referer.strip().lower() == "null":
+        upstream_referer = wf_config.osm_upstream_tile_referer
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": wf_config.osm_http_user_agent,
+            "Referer": upstream_referer,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            out_headers: Dict[str, str] = {}
+            cache_control = resp.headers.get("Cache-Control")
+            if cache_control:
+                out_headers["Cache-Control"] = cache_control
+            expires = resp.headers.get("Expires")
+            if expires:
+                out_headers["Expires"] = expires
+            return Response(
+                content=body, media_type="image/png", headers=out_headers
+            )
+    except urllib.error.HTTPError as e:
+        body = e.read() if e.fp else b""
+        return Response(content=body, status_code=e.code, media_type="image/png")
+    except Exception as e:
+        logger.warning("OSM tile proxy failed for %s: %s", url, e)
+        return Response(status_code=502)
+
+
 @app.get("/map", response_model=None)
 def get_map(
     center_lat: float = Query(default=37.0, description="Center latitude for the map"),
@@ -75,6 +135,14 @@ def get_map(
     ),
     zoom: int = Query(default=5, description="Initial zoom level"),
     format: str = Query(default="html", description="Response format: html or json"),
+    lookback_days: int = Query(
+        default=int(os.getenv("MAP_LOOKBACK_DAYS", "7")),
+        description="Only include records from the last N days (<=0 disables lookback filter)",
+    ),
+    max_records: int = Query(
+        default=int(os.getenv("MAP_MAX_RECORDS", "5000")),
+        description="Maximum number of records to plot",
+    ),
 ) -> Union[HTMLResponse, JSONResponse]:
     """
     Generate and return the wildfire map.
@@ -86,7 +154,11 @@ def get_map(
 
         # Generate the map using existing logic
         output_path = generate_wildfire_map(
-            center_lat=center_lat, center_lon=center_lon, zoom=zoom
+            center_lat=center_lat,
+            center_lon=center_lon,
+            zoom=zoom,
+            lookback_days=lookback_days,
+            max_records=max_records,
         )
 
         generation_time = time.time() - start_time
@@ -102,13 +174,17 @@ def get_map(
                     "center_lat": center_lat,
                     "center_lon": center_lon,
                     "zoom": zoom,
+                    "lookback_days": lookback_days,
+                    "max_records": max_records,
                 }
             )
         else:
             # Return the HTML content
             with open(output_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
-            return HTMLResponse(content=html_content)
+            return HTMLResponse(
+                content=html_content, headers=dict(_HTML_REFERRER_HEADERS)
+            )
 
     except Exception as e:
         logger.exception("Map generation failed")
@@ -123,6 +199,14 @@ def generate_map(
         default=-120.0, description="Center longitude for the map"
     ),
     zoom: int = Query(default=5, description="Initial zoom level"),
+    lookback_days: int = Query(
+        default=int(os.getenv("MAP_LOOKBACK_DAYS", "7")),
+        description="Only include records from the last N days (<=0 disables lookback filter)",
+    ),
+    max_records: int = Query(
+        default=int(os.getenv("MAP_MAX_RECORDS", "5000")),
+        description="Maximum number of records to plot",
+    ),
 ) -> JSONResponse:
     """
     Generate the wildfire map and return metadata.
@@ -132,7 +216,11 @@ def generate_map(
 
         # Generate the map using existing logic
         output_path = generate_wildfire_map(
-            center_lat=center_lat, center_lon=center_lon, zoom=zoom
+            center_lat=center_lat,
+            center_lon=center_lon,
+            zoom=zoom,
+            lookback_days=lookback_days,
+            max_records=max_records,
         )
 
         generation_time = time.time() - start_time
@@ -147,6 +235,8 @@ def generate_map(
                 "center_lat": center_lat,
                 "center_lon": center_lon,
                 "zoom": zoom,
+                "lookback_days": lookback_days,
+                "max_records": max_records,
             }
         )
 
