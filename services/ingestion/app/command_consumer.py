@@ -44,7 +44,9 @@ class IngestionCommandConsumer:
             kafka_producer: Kafka producer instance for publishing events
         """
         # Kafka configuration
-        self.kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")
+        self.kafka_broker = os.getenv(
+            "KAFKA_BROKER", "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+        )
         self.command_topic = os.getenv(
             "KAFKA_INGESTION_COMMAND_TOPIC", "wildfire.commands.ingest"
         )

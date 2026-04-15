@@ -214,9 +214,19 @@ def send_command_and_flush(
     """
     try:
         success = command_func(producer, *args, **kwargs)
-        if success:
-            producer.flush(timeout=timeout)
-        return success
+        if not success:
+            return False
+        # Remaining > 0 means messages were not delivered within the timeout.
+        remaining = producer.flush(timeout=timeout)
+        if remaining > 0:
+            logger.error(
+                "Kafka flush incomplete: %s message(s) still in producer queue "
+                "after %ss",
+                remaining,
+                timeout,
+            )
+            return False
+        return True
     except Exception as e:
         logger.error(f"Error sending command and flushing: {e}")
         return False

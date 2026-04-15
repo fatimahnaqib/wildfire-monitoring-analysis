@@ -40,7 +40,9 @@ class MapGenerationConsumer:
     def __init__(self):
         """Initialize the map consumer with configuration from environment variables."""
         # Kafka configuration
-        self.kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")
+        self.kafka_broker = os.getenv(
+            "KAFKA_BROKER", "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+        )
         self.processed_events_topic = os.getenv(
             "KAFKA_PROCESSED_EVENTS_TOPIC", "wildfire.processed.events"
         )
@@ -53,6 +55,8 @@ class MapGenerationConsumer:
         self.default_center_lat = float(os.getenv("MAP_CENTER_LAT", "37.0"))
         self.default_center_lon = float(os.getenv("MAP_CENTER_LON", "-120.0"))
         self.default_zoom = int(os.getenv("MAP_ZOOM", "5"))
+        self.default_lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "7"))
+        self.default_max_records = int(os.getenv("MAP_MAX_RECORDS", "5000"))
 
         # Consumer configuration
         self.consumer_config = {
@@ -92,6 +96,8 @@ class MapGenerationConsumer:
         center_lat: float = None,
         center_lon: float = None,
         zoom: int = None,
+        lookback_days: int = None,
+        max_records: int = None,
     ) -> bool:
         """
         Generate a wildfire map with the specified parameters.
@@ -108,13 +114,28 @@ class MapGenerationConsumer:
             center_lat = center_lat or self.default_center_lat
             center_lon = center_lon or self.default_center_lon
             zoom = zoom or self.default_zoom
+            lookback_days = (
+                self.default_lookback_days if lookback_days is None else lookback_days
+            )
+            max_records = (
+                self.default_max_records if max_records is None else max_records
+            )
 
             logger.info(
-                f"Generating map: center=({center_lat}, {center_lon}), zoom={zoom}"
+                "Generating map: center=(%s, %s), zoom=%s, lookback_days=%s, max_records=%s",
+                center_lat,
+                center_lon,
+                zoom,
+                lookback_days,
+                max_records,
             )
 
             output_path = generate_wildfire_map(
-                center_lat=center_lat, center_lon=center_lon, zoom=zoom
+                center_lat=center_lat,
+                center_lon=center_lon,
+                zoom=zoom,
+                lookback_days=lookback_days,
+                max_records=max_records,
             )
 
             self.maps_generated += 1
@@ -188,6 +209,8 @@ class MapGenerationConsumer:
             center_lat = command.get("center_lat", self.default_center_lat)
             center_lon = command.get("center_lon", self.default_center_lon)
             zoom = command.get("zoom", self.default_zoom)
+            lookback_days = command.get("lookback_days", self.default_lookback_days)
+            max_records = command.get("max_records", self.default_max_records)
 
             logger.info(f"Received map regeneration command: {command}")
 
@@ -195,6 +218,8 @@ class MapGenerationConsumer:
                 center_lat=center_lat,
                 center_lon=center_lon,
                 zoom=zoom,
+                lookback_days=lookback_days,
+                max_records=max_records,
             )
 
         except json.JSONDecodeError as e:

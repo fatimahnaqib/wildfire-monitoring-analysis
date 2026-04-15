@@ -44,7 +44,7 @@ The pipeline is **event-driven**: Airflow sends commands to Kafka and does not w
 
 **Requirements:**
 - Docker 20.10+ and Docker Compose 2.0+
-- The following ports must be available: 8080, 5432, 9092, 8000–8003
+- The following ports must be available: 8080, **8081**, 5432, 9092, 8000–8003
 
 **Installation:**
 
@@ -75,9 +75,28 @@ docker compose restart airflow-webserver
 
 **Access:**
 - Airflow UI: http://localhost:8080 (`admin`/`admin`)
+- Kafka UI: http://localhost:8081
 - Service APIs: http://localhost:8000-8003
 - API Docs: http://localhost:8000-8003/docs (each service)
 - Generated Maps: `airflow/dashboard/wildfire_map.html`
+
+**Consumer scaling note:** `consumer` workers are scaled without publishing a host port. The HTTP endpoint for `/health` and `/stats` is `consumer-api`, published on the host port configured by `CONSUMER_API_PORT` in `.env` (defaults to **8002**, so typically `http://localhost:8002`).
+
+## Kafka: Dev vs Production Notes
+
+This repo ships a **3-broker Kafka cluster** in Docker Compose so you can validate **replication** and **consumer scaling** locally.
+
+- **Brokers / availability**: A 3-broker cluster can tolerate **1 broker failure** (assuming topics have replication factor 3 and `min.insync.replicas` is configured appropriately).
+- **Replication factor**: This repo configures topic creation using `KAFKA_TOPIC_REPLICATION_FACTOR` (set to `3` in `.env` / `docker-compose.yml`).
+- **Partitions / scaling**: A consumer group can scale to **at most the number of partitions** for a given topic. This repo uses:
+  - `KAFKA_EVENT_TOPIC_PARTITIONS` (defaults to 6 in compose) for `wildfire.raw.events` and `wildfire.processed.events`
+  - `KAFKA_COMMAND_TOPIC_PARTITIONS` (defaults to 3) for command topics
+
+**Production guidance (high-signal):**
+- **Prefer dedicated controllers**: For critical production Kafka, avoid “combined” controller+broker nodes; run **3 controllers** and **N brokers** separately.
+- **Security**: Add TLS and SASL, and keep brokers off the public internet (private subnets / Kubernetes network policies).
+- **Durability**: Use `acks=all` (already used for command publishing) and ensure `min.insync.replicas >= 2` for RF=3 topics.
+- **Capacity planning**: Partition counts should be driven by expected throughput and consumer parallelism; changing partitions later is possible but operationally non-trivial.
 
 ## Map Example
 
@@ -285,6 +304,10 @@ docker compose logs kafka-topics-init
 - If the map file is missing: restart the map service (`docker compose restart map`) so it runs startup map generation again, or call the API once: `curl -X POST "http://localhost:8003/generate"`.
 - After the first ingestion run, the map consumer will regenerate the map when processed events arrive. Check map service logs for "Map consumer" and "Generating map".
 
+**Markers show but basemap is blank (gray background):**
+- This usually means the HTML is trying to load tiles from a **root-relative** URL like `/osm-tiles/...` while you opened the file via `file://...`, which resolves to `file:///osm-tiles/...` (invalid).
+- Fix: ensure `MAP_PUBLIC_BASE_URL` is set (see `.env`) so generated HTML uses `http://localhost:8003/osm-tiles/...`, **keep the map container running**, then regenerate the map (`POST /generate` on port **8003**).
+
 **Kafka connection issues:**
 - Kafka uses KRaft mode (no Zookeeper)
 - Ensure topics exist: `kafka-topics-init` runs automatically on `docker compose up -d`
@@ -295,7 +318,7 @@ docker compose logs kafka-topics-init
 - **Python 3.11**
 - **Apache Airflow 2.8.1** - Workflow orchestration
 - **FastAPI 0.115.0** - REST APIs
-- **Apache Kafka** (Bitnami, KRaft) - Message streaming
+- **Apache Kafka** (KRaft, 3 brokers in Compose) - Message streaming
 - **PostgreSQL 14** - Data storage
 - **Folium 0.16.0** - Map visualization
 - **Confluent Kafka** - Python Kafka client

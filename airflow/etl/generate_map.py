@@ -5,27 +5,106 @@ This module handles creating interactive Folium maps from wildfire data
 stored in PostgreSQL and saving them as HTML files.
 """
 
+import html
 import os
 import logging
-from typing import Optional
+from typing import Optional, Tuple
+import threading
+import tempfile
+from contextlib import contextmanager
 import pandas as pd
 import folium
 import psycopg2
 from psycopg2 import OperationalError, DatabaseError
+from psycopg2.pool import ThreadedConnectionPool
 
 from etl.config import config
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
+_POOL_LOCK = threading.Lock()
+_POOL: Optional[ThreadedConnectionPool] = None
+
 
 class MapGenerationError(Exception):
     """Custom exception for map generation errors."""
 
 
+def _pool_min_conn() -> int:
+    return max(1, int(os.getenv("PG_POOL_MIN_CONN", "1")))
+
+
+def _pool_max_conn(min_conn: int) -> int:
+    return max(min_conn, int(os.getenv("PG_POOL_MAX_CONN", "4")))
+
+
+def _get_pool() -> ThreadedConnectionPool:
+    """
+    Lazily create (and reuse) a thread-safe PostgreSQL connection pool.
+
+    This module is used by both Airflow tasks and the FastAPI map service.
+    In the map service, requests may be handled concurrently, so we must use
+    a pool that is safe across threads.
+    """
+    global _POOL
+    if _POOL is not None:
+        return _POOL
+    with _POOL_LOCK:
+        if _POOL is not None:
+            return _POOL
+        min_conn = _pool_min_conn()
+        max_conn = _pool_max_conn(min_conn)
+        try:
+            _POOL = ThreadedConnectionPool(
+                min_conn,
+                max_conn,
+                dbname=config.postgres_db,
+                user=config.postgres_user,
+                password=config.postgres_password,
+                host=config.postgres_host,
+                port=config.postgres_port,
+            )
+            logger.info(
+                "PostgreSQL connection pool ready for map generation (min=%s max=%s)",
+                min_conn,
+                max_conn,
+            )
+            return _POOL
+        except OperationalError as e:
+            error_msg = f"Database pool creation failed: {e}"
+            logger.error(error_msg)
+            raise MapGenerationError(error_msg) from e
+
+
+@contextmanager
+def pooled_connection() -> psycopg2.extensions.connection:
+    """
+    Borrow a connection from the pool and always return it.
+
+    This avoids creating/destroying TCP connections for every map generation,
+    and protects Postgres from connection spikes under load.
+    """
+    pool = _get_pool()
+    conn = None
+    try:
+        conn = pool.getconn()
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                pool.putconn(conn)
+            except Exception as e:
+                logger.warning("Failed returning connection to pool: %s", e)
+
+
 def connect_to_database() -> psycopg2.extensions.connection:
     """
     Establish connection to PostgreSQL database.
+
+    Note: Prefer `pooled_connection()` for production services. This function
+    remains for compatibility with existing code paths that expect a raw
+    connection object.
 
     Returns:
         psycopg2.connection: Database connection object
@@ -34,14 +113,9 @@ def connect_to_database() -> psycopg2.extensions.connection:
         MapGenerationError: If database connection fails
     """
     try:
-        connection = psycopg2.connect(
-            dbname=config.postgres_db,
-            user=config.postgres_user,
-            password=config.postgres_password,
-            host=config.postgres_host,
-            port=config.postgres_port,
-        )
-        logger.info("Successfully connected to PostgreSQL database")
+        pool = _get_pool()
+        connection = pool.getconn()
+        logger.info("Borrowed PostgreSQL connection from pool for map generation")
         return connection
 
     except OperationalError as e:
@@ -54,7 +128,27 @@ def connect_to_database() -> psycopg2.extensions.connection:
         raise MapGenerationError(error_msg) from e
 
 
-def fetch_wildfire_data(connection: psycopg2.extensions.connection) -> pd.DataFrame:
+def _default_map_query_limits() -> Tuple[int, int]:
+    """
+    Return default query constraints for map generation.
+
+    These protect the map generator (and API) from loading an ever-growing table
+    into memory.
+    """
+    lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "7"))
+    max_records = int(os.getenv("MAP_MAX_RECORDS", "5000"))
+    # Guardrails for silly values
+    lookback_days = max(1, lookback_days)
+    max_records = max(1, max_records)
+    return lookback_days, max_records
+
+
+def fetch_wildfire_data(
+    connection: psycopg2.extensions.connection,
+    *,
+    lookback_days: Optional[int] = None,
+    max_records: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Fetch wildfire data from PostgreSQL database.
 
@@ -68,14 +162,44 @@ def fetch_wildfire_data(connection: psycopg2.extensions.connection) -> pd.DataFr
         MapGenerationError: If data fetching fails
     """
     try:
-        query = """
-        SELECT latitude, longitude, bright_ti4, acq_date, acq_time, satellite
-        FROM wildfire_events
-        ORDER BY acq_date DESC, acq_time DESC
-        """
+        default_lookback_days, default_max_records = _default_map_query_limits()
+        lookback_days = (
+            default_lookback_days if lookback_days is None else int(lookback_days)
+        )
+        max_records = default_max_records if max_records is None else int(max_records)
 
-        df = pd.read_sql_query(query, connection)
-        logger.info(f"Fetched {len(df)} wildfire records from database")
+        # Safety: always apply a LIMIT; allow disabling lookback only if explicitly <= 0.
+        max_records = max(1, max_records)
+
+        if lookback_days is not None and int(lookback_days) > 0:
+            query = """
+            SELECT latitude, longitude, bright_ti4, acq_date, acq_time, satellite
+            FROM wildfire_events
+            WHERE acq_date >= (CURRENT_DATE - %s)
+            ORDER BY acq_date DESC, acq_time DESC
+            LIMIT %s
+            """
+            params = (int(lookback_days), max_records)
+            df = pd.read_sql_query(query, connection, params=params)
+            logger.info(
+                "Fetched %s wildfire records from database (lookback_days=%s, limit=%s)",
+                len(df),
+                lookback_days,
+                max_records,
+            )
+        else:
+            query = """
+            SELECT latitude, longitude, bright_ti4, acq_date, acq_time, satellite
+            FROM wildfire_events
+            ORDER BY acq_date DESC, acq_time DESC
+            LIMIT %s
+            """
+            df = pd.read_sql_query(query, connection, params=(max_records,))
+            logger.info(
+                "Fetched %s wildfire records from database (lookback_days=disabled, limit=%s)",
+                len(df),
+                max_records,
+            )
 
         if df.empty:
             logger.warning("No wildfire data found in database")
@@ -116,14 +240,43 @@ def create_base_map(
         folium.Map: Configured base map
     """
     try:
-        # Create map with custom tiles
+        osm_attr = (
+            '&copy; <a href="https://www.openstreetmap.org/copyright">'
+            "OpenStreetMap</a> contributors"
+        )
+        tile_url = config.osm_raster_tile_url_template
+
+        # OSM tile policy: encourage a real Referer on cross-origin tile <img> requests
+        # (Leaflet 1.9+). When using the local /osm-tiles proxy, tiles are same-origin.
+        tile_kwargs = dict(
+            tiles=tile_url,
+            attr=osm_attr,
+            name="OpenStreetMap",
+            min_zoom=0,
+            max_zoom=19,
+            max_native_zoom=19,
+            subdomains="",
+            control=True,
+            show=True,
+        )
+        if not config.osm_tile_use_proxy:
+            tile_kwargs["referrer_policy"] = config.osm_leaflet_tile_referrer_policy
+
+        base_tiles = folium.TileLayer(**tile_kwargs)
+
         map_obj = folium.Map(
             location=[center_lat, center_lon],
             zoom_start=zoom,
-            tiles="OpenStreetMap",
+            tiles=base_tiles,
             width="100%",
             height="100%",
         )
+
+        # Document-level referrer policy (avoids empty Referer when a parent page used
+        # Referrer-Policy: no-referrer).
+        meta_policy = html.escape(config.osm_referrer_meta_policy, quote=True)
+        policy_head = f'<meta name="referrer" content="{meta_policy}">\n'
+        map_obj.get_root().header.add_child(folium.Element(policy_head))
 
         # Ensure the map fills the viewport when opened as a standalone HTML file.
         # Folium uses a div with class "folium-map" for the Leaflet container.
@@ -281,8 +434,24 @@ def save_map_to_file(map_obj: folium.Map, output_path: str) -> str:
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save map to file
-        map_obj.save(output_path)
+        # Save atomically to avoid concurrent writers leaving a truncated file.
+        # Write to a temp file in the same directory, then replace.
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".wildfire_map_",
+            suffix=".html",
+            dir=output_dir,
+        )
+        try:
+            os.close(fd)
+            map_obj.save(tmp_path)
+            os.replace(tmp_path, output_path)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                # Best-effort cleanup; not fatal.
+                pass
 
         # Verify file was created
         if not os.path.exists(output_path):
@@ -308,6 +477,8 @@ def generate_wildfire_map(
     center_lat: float = 37.0,
     center_lon: float = -120.0,
     zoom: int = 5,
+    lookback_days: Optional[int] = None,
+    max_records: Optional[int] = None,
 ) -> str:
     """
     Generate an interactive wildfire map from database data.
@@ -329,13 +500,14 @@ def generate_wildfire_map(
 
     logger.info("Starting wildfire map generation")
 
-    connection = None
     try:
-        # Connect to database
-        connection = connect_to_database()
-
-        # Fetch wildfire data
-        df = fetch_wildfire_data(connection)
+        with pooled_connection() as connection:
+            # Fetch wildfire data
+            df = fetch_wildfire_data(
+                connection,
+                lookback_days=lookback_days,
+                max_records=max_records,
+            )
 
         # Create base map
         map_obj = create_base_map(center_lat, center_lon, zoom)
@@ -362,10 +534,5 @@ def generate_wildfire_map(
         raise MapGenerationError(error_msg) from e
 
     finally:
-        # Ensure database connection is closed
-        if connection:
-            try:
-                connection.close()
-                logger.debug("Database connection closed")
-            except Exception as e:
-                logger.warning(f"Error closing database connection: {e}")
+        # No explicit close needed: pooled_connection() returns it to the pool.
+        pass

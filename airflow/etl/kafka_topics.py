@@ -7,9 +7,14 @@ Topics follow a clear naming convention:
 - wildfire.processed.* - Processed/validated events
 - wildfire.commands.* - Commands to trigger actions
 - wildfire.map.* - Map-related events
+
+Replication factor and partition counts are driven by environment variables so the
+same code works against a single-broker dev stack (RF=1) or a multi-broker cluster
+(RF=3, more partitions for consumer scaling).
 """
 
 import logging
+import os
 from typing import Any, Dict, List
 
 from confluent_kafka.admin import AdminClient, NewTopic
@@ -17,59 +22,83 @@ from confluent_kafka.admin import AdminClient, NewTopic
 logger = logging.getLogger(__name__)
 
 
-# Topic definitions with configuration
-TOPIC_DEFINITIONS = {
-    # Raw wildfire events from ingestion
-    "wildfire.raw.events": {
-        "num_partitions": 3,  # Allow parallel processing
-        "replication_factor": 1,  # Single broker for now
-        "config": {
-            "retention.ms": 604800000,  # 7 days retention
-            "compression.type": "gzip",
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %s", name, raw, default)
+        return default
+
+
+def get_topic_definitions() -> Dict[str, Dict[str, Any]]:
+    """
+    Build topic definitions from environment.
+
+    KAFKA_TOPIC_REPLICATION_FACTOR:
+        Must be <= broker count. Use 1 for a single broker; 3 for a 3-broker cluster.
+    KAFKA_EVENT_TOPIC_PARTITIONS:
+        Partitions for high-throughput event topics (raw/processed). More partitions
+        allow more consumers in the same group to process in parallel.
+    KAFKA_COMMAND_TOPIC_PARTITIONS:
+        Partitions for command topics (multiple consumers can share load; ordering
+        is only per-partition).
+    """
+    # Default RF=1 for single-broker dev; docker-compose sets 3 for the 3-broker profile.
+    replication_factor = _int_env("KAFKA_TOPIC_REPLICATION_FACTOR", 1)
+    event_partitions = _int_env("KAFKA_EVENT_TOPIC_PARTITIONS", 6)
+    command_partitions = _int_env("KAFKA_COMMAND_TOPIC_PARTITIONS", 3)
+    legacy_partitions = _int_env("KAFKA_LEGACY_TOPIC_PARTITIONS", 3)
+
+    return {
+        "wildfire.raw.events": {
+            "num_partitions": event_partitions,
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 604800000,
+                "compression.type": "gzip",
+            },
+            "description": "Raw wildfire detection events from NASA FIRMS API",
         },
-        "description": "Raw wildfire detection events from NASA FIRMS API",
-    },
-    # Processed/validated events ready for storage
-    "wildfire.processed.events": {
-        "num_partitions": 3,
-        "replication_factor": 1,
-        "config": {
-            "retention.ms": 604800000,  # 7 days retention
-            "compression.type": "gzip",
+        "wildfire.processed.events": {
+            "num_partitions": event_partitions,
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 604800000,
+                "compression.type": "gzip",
+            },
+            "description": "Validated wildfire events ready for database storage",
         },
-        "description": "Validated wildfire events ready for database storage",
-    },
-    # Commands to trigger ingestion
-    "wildfire.commands.ingest": {
-        "num_partitions": 1,
-        "replication_factor": 1,
-        "config": {
-            "retention.ms": 86400000,  # 1 day retention for commands
-            "compression.type": "gzip",
+        "wildfire.commands.ingest": {
+            "num_partitions": command_partitions,
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 86400000,
+                "compression.type": "gzip",
+            },
+            "description": "Commands to trigger data ingestion from NASA FIRMS",
         },
-        "description": "Commands to trigger data ingestion from NASA FIRMS",
-    },
-    # Commands to regenerate maps
-    "wildfire.commands.map.regenerate": {
-        "num_partitions": 1,
-        "replication_factor": 1,
-        "config": {
-            "retention.ms": 86400000,  # 1 day retention
-            "compression.type": "gzip",
+        "wildfire.commands.map.regenerate": {
+            "num_partitions": command_partitions,
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 86400000,
+                "compression.type": "gzip",
+            },
+            "description": "Commands to trigger map regeneration",
         },
-        "description": "Commands to trigger map regeneration",
-    },
-    # Legacy topic (kept for backward compatibility during migration)
-    "wildfire_data": {
-        "num_partitions": 1,
-        "replication_factor": 1,
-        "config": {
-            "retention.ms": 604800000,
-            "compression.type": "gzip",
+        "wildfire_data": {
+            "num_partitions": legacy_partitions,
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 604800000,
+                "compression.type": "gzip",
+            },
+            "description": "Legacy topic - will be deprecated",
         },
-        "description": "Legacy topic - will be deprecated",
-    },
-}
+    }
 
 
 def create_kafka_admin_client(bootstrap_servers: str) -> AdminClient:
@@ -95,13 +124,13 @@ def ensure_topics_exist(
 
     Args:
         bootstrap_servers: Kafka bootstrap servers
-        topics: Dictionary of topic definitions (defaults to TOPIC_DEFINITIONS)
+        topics: Dictionary of topic definitions (defaults to get_topic_definitions())
 
     Returns:
         Dict mapping topic names to creation success status
     """
     if topics is None:
-        topics = TOPIC_DEFINITIONS
+        topics = get_topic_definitions()
 
     admin_client = create_kafka_admin_client(bootstrap_servers)
     existing_topics = admin_client.list_topics(timeout=10).topics
@@ -157,9 +186,7 @@ def list_topics(bootstrap_servers: str) -> List[str]:
 
 
 if __name__ == "__main__":
-    import os
-
-    bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     logging.basicConfig(level=logging.INFO)
 
     logger.info("Ensuring all required topics exist...")

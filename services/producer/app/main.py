@@ -1,11 +1,16 @@
 import os
 import logging
+from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
-from etl.kafka_producer import produce_to_kafka
+from etl.command_producer import (
+    create_command_producer,
+    send_command_and_flush,
+    send_ingestion_command,
+)
 from etl.config import config as airflow_config
 
 
@@ -15,15 +20,18 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-app = FastAPI(title="Wildfire Producer Service", version="1.0.0")
+app = FastAPI(
+    title="Wildfire Producer Service",
+    version="1.0.0",
+    description=(
+        "Publishes ingestion commands to Kafka (event-driven). "
+        "CSV file paths are not used; ingestion service fetches FIRMS data and emits raw events."
+    ),
+)
 
 # Metrics
 producer_requests_total = Counter(
     "producer_requests_total", "Total number of producer requests", ["outcome"]
-)
-
-producer_records_total = Counter(
-    "producer_records_total", "Total number of records processed", ["status"]
 )
 
 
@@ -40,23 +48,62 @@ def metrics() -> PlainTextResponse:
 
 
 @app.post("/produce")
-def produce() -> JSONResponse:
+def produce(
+    area: Optional[str] = Query(
+        default=None,
+        description="FIRMS area bbox (lonW,latS,lonE,latN); defaults from service config",
+    ),
+    day_range: Optional[str] = Query(
+        default=None, description="Past N days to fetch; defaults from service config"
+    ),
+    source: Optional[str] = Query(
+        default=None,
+        description="FIRMS source e.g. VIIRS_SNPP_NRT; defaults from service config",
+    ),
+) -> JSONResponse:
+    """
+    Trigger ingestion asynchronously by publishing a command to Kafka.
+
+    Same pattern as the Airflow DAG: does not wait for ingestion or downstream processing.
+    """
+    kafka_bootstrap = os.getenv(
+        "KAFKA_BOOTSTRAP_SERVERS", airflow_config.kafka_bootstrap_servers
+    )
+    ingestion_command_topic = os.getenv(
+        "KAFKA_INGESTION_COMMAND_TOPIC", "wildfire.commands.ingest"
+    )
+
     try:
-        logger.info(f"Starting Kafka producer for file: {airflow_config.output_file}")
-        production_stats = produce_to_kafka()
-
-        # Update metrics
-        producer_requests_total.labels(outcome="success").inc()
-        producer_records_total.labels(status="valid").inc(
-            production_stats.get("valid_records", 0)
+        producer = create_command_producer(kafka_bootstrap)
+        success = send_command_and_flush(
+            producer,
+            send_ingestion_command,
+            topic=ingestion_command_topic,
+            area=area or airflow_config.area,
+            day_range=day_range or airflow_config.day_range,
+            source=source or airflow_config.source,
+            map_key=airflow_config.map_key,
+            metadata={"triggered_by": "producer_service_http"},
         )
-        producer_records_total.labels(status="invalid").inc(
-            production_stats.get("invalid_records", 0)
-        )
 
-        return JSONResponse({"status": "success", "stats": production_stats})
+        if success:
+            producer_requests_total.labels(outcome="success").inc()
+            return JSONResponse(
+                {
+                    "status": "success",
+                    "mode": "kafka_command",
+                    "topic": ingestion_command_topic,
+                    "message": "Ingestion command published; processing is asynchronous.",
+                }
+            )
+
+        producer_requests_total.labels(outcome="error").inc()
+        return JSONResponse(
+            {"status": "error", "message": "Failed to publish ingestion command"},
+            status_code=500,
+        )
 
     except Exception as e:
-        logger.exception("Producer failed")
+        logger.exception("Failed to publish ingestion command")
         producer_requests_total.labels(outcome="error").inc()
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)

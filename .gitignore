@@ -108,6 +108,7 @@ SYSTEM_DESIGN.md
 EVENT_DRIVEN_ARCHITECTURE.md
 REFACTORING_SUMMARY.md
 docs/TESTING_EVENT_DRIVEN_WORKFLOW.md
+docs/load-test-consumer.md
 
 # ==============================================================================
 # IDE / Editors
