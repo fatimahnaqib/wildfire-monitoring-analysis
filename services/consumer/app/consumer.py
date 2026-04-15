@@ -14,7 +14,6 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from confluent_kafka import Consumer, KafkaError, TopicPartition
-import psycopg2
 from psycopg2 import OperationalError, DatabaseError, IntegrityError
 from psycopg2.extras import execute_values
 from psycopg2.pool import SimpleConnectionPool
