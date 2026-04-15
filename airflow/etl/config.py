@@ -44,9 +44,11 @@ class WildfireConfig:
 
         # OpenStreetMap tile policy (browser tiles cannot set User-Agent; optional HTTP proxy
         # on the map service adds Referer + app User-Agent on server-to-OSM requests).
-        self.osm_tile_use_proxy = os.getenv(
-            "OSM_TILE_USE_PROXY", "true"
-        ).lower() in ("1", "true", "yes")
+        self.osm_tile_use_proxy = os.getenv("OSM_TILE_USE_PROXY", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         self.map_public_base_url = os.getenv("MAP_PUBLIC_BASE_URL", "").rstrip("/")
         self.osm_http_user_agent = os.getenv(
             "OSM_HTTP_USER_AGENT",

@@ -163,7 +163,9 @@ def fetch_wildfire_data(
     """
     try:
         default_lookback_days, default_max_records = _default_map_query_limits()
-        lookback_days = default_lookback_days if lookback_days is None else int(lookback_days)
+        lookback_days = (
+            default_lookback_days if lookback_days is None else int(lookback_days)
+        )
         max_records = default_max_records if max_records is None else int(max_records)
 
         # Safety: always apply a LIMIT; allow disabling lookback only if explicitly <= 0.

@@ -116,9 +116,7 @@ def proxy_osm_raster_tile(request: Request, z: int, x: int, y: int) -> Response:
             expires = resp.headers.get("Expires")
             if expires:
                 out_headers["Expires"] = expires
-            return Response(
-                content=body, media_type="image/png", headers=out_headers
-            )
+            return Response(content=body, media_type="image/png", headers=out_headers)
     except urllib.error.HTTPError as e:
         body = e.read() if e.fp else b""
         return Response(content=body, status_code=e.code, media_type="image/png")

@@ -117,7 +117,9 @@ class MapGenerationConsumer:
             lookback_days = (
                 self.default_lookback_days if lookback_days is None else lookback_days
             )
-            max_records = self.default_max_records if max_records is None else max_records
+            max_records = (
+                self.default_max_records if max_records is None else max_records
+            )
 
             logger.info(
                 "Generating map: center=(%s, %s), zoom=%s, lookback_days=%s, max_records=%s",

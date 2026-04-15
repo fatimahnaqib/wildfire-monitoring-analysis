@@ -310,7 +310,9 @@ class WildfireConsumer:
                             self._row_to_tuple(record)
                             good_pairs.append((message, record))
                         except KeyError as e:
-                            logger.error("Record missing required field, skipping: %s", e)
+                            logger.error(
+                                "Record missing required field, skipping: %s", e
+                            )
                             parse_fail_messages.append(message)
                         except (json.JSONDecodeError, UnicodeDecodeError) as e:
                             logger.error("Unparseable message skipped: %s", e)
