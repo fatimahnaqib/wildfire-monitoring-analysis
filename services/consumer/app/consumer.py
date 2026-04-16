@@ -11,9 +11,12 @@ import os
 import signal
 import sys
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from confluent_kafka import Consumer, KafkaError, TopicPartition
+from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
+
+from app.kafka_dlq import build_dlq_envelope, publish_dlq_envelopes
 from psycopg2 import OperationalError, DatabaseError, IntegrityError
 from psycopg2.extras import execute_values
 from psycopg2.pool import SimpleConnectionPool
@@ -56,6 +59,8 @@ class WildfireConsumer:
         if os.getenv("KAFKA_TOPIC") and os.getenv("KAFKA_TOPIC") == "wildfire_data":
             self.topic_name = "wildfire_data"
         self.group_id = os.getenv("KAFKA_GROUP_ID", "wildfire_group")
+        self.dlq_topic = os.getenv("KAFKA_DLQ_TOPIC", "wildfire.dlq.events")
+        self._dlq_flush_timeout = float(os.getenv("KAFKA_DLQ_FLUSH_TIMEOUT_SEC", "30"))
 
         # PostgreSQL configuration
         self.pg_config = {
@@ -85,7 +90,13 @@ class WildfireConsumer:
         }
 
         self.consumer = None
+        self._dlq_producer: Optional[Producer] = None
         self.running = False
+        self._failure_streak = 0
+        self._backoff_base_sec = float(
+            os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5")
+        )
+        self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
 
         # Setup signal handlers for graceful shutdown (only valid in main thread)
         self._setup_signal_handlers()
@@ -236,6 +247,40 @@ class WildfireConsumer:
                 except Exception as e:
                     logger.warning("Returning connection to pool failed: %s", e)
 
+    def _create_dlq_producer(self) -> Producer:
+        return Producer(
+            {
+                "bootstrap.servers": self.kafka_broker,
+                "client.id": f"{self.group_id}-dlq",
+                "acks": "all",
+                "retries": 3,
+                "retry.backoff.ms": 1000,
+                "compression.type": "gzip",
+            }
+        )
+
+    def _publish_parse_failures_to_dlq(
+        self, failures: List[Tuple[Any, str, str]]
+    ) -> None:
+        """Publish parse/decode failures to DLQ then caller commits offsets."""
+        if not failures or self._dlq_producer is None:
+            return
+        envelopes = [
+            build_dlq_envelope(
+                source="wildfire_db_consumer",
+                failure_reason=reason,
+                message=msg,
+                detail=detail,
+            )
+            for msg, reason, detail in failures
+        ]
+        publish_dlq_envelopes(
+            self._dlq_producer,
+            self.dlq_topic,
+            envelopes,
+            flush_timeout=self._dlq_flush_timeout,
+        )
+
     def _commit_messages(self, messages: List[Any]) -> None:
         """Commit Kafka offsets for the highest contiguous processed offset per partition."""
         if not messages or self.consumer is None:
@@ -283,6 +328,7 @@ class WildfireConsumer:
         if not self.consumer:
             raise WildfireConsumerError("Failed to create Kafka consumer")
 
+        self._dlq_producer = self._create_dlq_producer()
         self._pool = self._create_pool()
 
         try:
@@ -305,7 +351,7 @@ class WildfireConsumer:
                         continue
 
                     kafka_errors = 0
-                    parse_fail_messages: List[Any] = []
+                    parse_failures: List[Tuple[Any, str, str]] = []
                     good_pairs: List[Tuple[Any, Dict[str, Any]]] = []
 
                     for message in messages:
@@ -329,22 +375,31 @@ class WildfireConsumer:
                             logger.error(
                                 "Record missing required field, skipping: %s", e
                             )
-                            parse_fail_messages.append(message)
+                            parse_failures.append(
+                                (message, "missing_required_field", str(e))
+                            )
                         except (json.JSONDecodeError, UnicodeDecodeError) as e:
                             logger.error("Unparseable message skipped: %s", e)
-                            parse_fail_messages.append(message)
+                            parse_failures.append(
+                                (message, "json_or_utf8_decode_error", str(e))
+                            )
                         except Exception as e:
                             logger.error("Error decoding message: %s", e)
-                            parse_fail_messages.append(message)
+                            parse_failures.append((message, "decode_error", str(e)))
 
-                    if parse_fail_messages:
+                    if parse_failures:
                         try:
-                            self._commit_messages(parse_fail_messages)
+                            self._publish_parse_failures_to_dlq(parse_failures)
+                            self._commit_messages([m for m, _, _ in parse_failures])
                         except Exception as e:
-                            logger.error("Failed to commit parse-error offsets: %s", e)
+                            logger.error(
+                                "DLQ publish or parse-error offset commit failed: %s", e
+                            )
 
                     if kafka_errors:
                         error_count += kafka_errors
+                        self._failure_streak += kafka_errors
+                        self._sleep_backoff()
 
                     if not good_pairs:
                         continue
@@ -361,12 +416,17 @@ class WildfireConsumer:
                                 e,
                             )
                             error_count += len(batch_messages)
+                            self._failure_streak += 1
+                            self._sleep_backoff()
                             continue
 
                         processed_count += len(batch_messages)
+                        self._failure_streak = 0
                     else:
                         error_count += len(batch_messages)
                         # Do not commit: messages remain available for retry
+                        self._failure_streak += 1
+                        self._sleep_backoff()
 
                     if (processed_count + error_count) % 100 == 0 and (
                         processed_count + error_count
@@ -384,6 +444,8 @@ class WildfireConsumer:
                 except Exception as e:
                     logger.error(f"Error in consumer loop: {e}")
                     error_count += 1
+                    self._failure_streak += 1
+                    self._sleep_backoff()
                     continue
 
             logger.info(
@@ -397,9 +459,25 @@ class WildfireConsumer:
 
         finally:
             self._close_pool()
+            if self._dlq_producer is not None:
+                try:
+                    self._dlq_producer.flush(timeout=5)
+                except Exception as e:
+                    logger.warning("DLQ producer flush on shutdown: %s", e)
+                self._dlq_producer = None
             if self.consumer:
                 self.consumer.close()
                 logger.info("Kafka consumer closed")
+
+    def _sleep_backoff(self) -> None:
+        """Exponential backoff with jitter to avoid hot-looping on failures."""
+        if self._failure_streak <= 0:
+            return
+        cap = self._backoff_max_sec
+        base = self._backoff_base_sec
+        delay = min(cap, base * (2 ** max(0, self._failure_streak - 1)))
+        jitter = delay * 0.1
+        time.sleep(max(0.0, delay - jitter))
 
 
 def main():

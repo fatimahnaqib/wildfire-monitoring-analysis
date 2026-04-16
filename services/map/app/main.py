@@ -257,7 +257,11 @@ def startup_event():
             "Initial map generation at startup failed (will retry when events arrive): %s",
             e,
         )
-    start_map_consumer_background()
+    enabled = os.getenv("MAP_CONSUMER_ENABLED", "true").strip().lower()
+    if enabled in {"1", "true", "yes", "y", "on"}:
+        start_map_consumer_background()
+    else:
+        logger.info("Map consumer disabled (MAP_CONSUMER_ENABLED=%s)", enabled)
 
 
 @app.on_event("shutdown")

@@ -15,8 +15,11 @@ import threading
 import time
 from typing import Any, Optional
 
-from confluent_kafka import Consumer, KafkaError
+import psycopg2
+from confluent_kafka import Consumer, KafkaError, Producer
+from psycopg2 import OperationalError
 from etl.generate_map import generate_wildfire_map
+from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -63,8 +66,8 @@ class MapGenerationConsumer:
             "bootstrap.servers": self.kafka_broker,
             "group.id": self.group_id,
             "auto.offset.reset": "latest",  # Only process new events
-            "enable.auto.commit": True,
-            "auto.commit.interval.ms": 5000,  # Commit every 5 seconds
+            # Manual commit to avoid offset advancement if map generation fails.
+            "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
         }
@@ -73,6 +76,27 @@ class MapGenerationConsumer:
         self.running = False
         self.maps_generated = 0
         self.last_map_time = None
+        self._failure_streak = 0
+        self._backoff_base_sec = float(
+            os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5")
+        )
+        self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
+
+        # Postgres advisory lock for map generation (prevents multiple replicas
+        # from writing the same output file concurrently).
+        self._pg_config = {
+            "dbname": os.getenv("POSTGRES_DB", "wildfire_db"),
+            "user": os.getenv("POSTGRES_USER", "airflow"),
+            "password": os.getenv("POSTGRES_PASSWORD", "airflow"),
+            "host": os.getenv("POSTGRES_HOST", "postgres"),
+            "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        }
+        # Any stable 64-bit integer works; keep it constant across deployments.
+        self._map_lock_key = int(os.getenv("MAP_GENERATION_LOCK_KEY", "94531021"))
+
+        self.dlq_topic = os.getenv("KAFKA_DLQ_TOPIC", "wildfire.dlq.events")
+        self._dlq_flush_timeout = float(os.getenv("KAFKA_DLQ_FLUSH_TIMEOUT_SEC", "15"))
+        self._dlq_producer: Optional[Producer] = None
 
         # Setup signal handlers for graceful shutdown (only valid in main thread)
         self._setup_signal_handlers()
@@ -90,6 +114,18 @@ class MapGenerationConsumer:
         """Handle shutdown signals gracefully."""
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self.running = False
+
+    def _create_dlq_producer(self) -> Producer:
+        return Producer(
+            {
+                "bootstrap.servers": self.kafka_broker,
+                "client.id": f"{self.group_id}-map-dlq",
+                "acks": "all",
+                "retries": 3,
+                "retry.backoff.ms": 1000,
+                "compression.type": "gzip",
+            }
+        )
 
     def generate_map(
         self,
@@ -130,13 +166,57 @@ class MapGenerationConsumer:
                 max_records,
             )
 
-            output_path = generate_wildfire_map(
-                center_lat=center_lat,
-                center_lon=center_lon,
-                zoom=zoom,
-                lookback_days=lookback_days,
-                max_records=max_records,
-            )
+            lock_conn = None
+            have_lock = False
+            try:
+                lock_conn = psycopg2.connect(**self._pg_config)
+                lock_conn.autocommit = True
+                with lock_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (self._map_lock_key,)
+                    )
+                    have_lock = bool(cur.fetchone()[0])
+                if not have_lock:
+                    logger.info(
+                        "Skipping map generation: another replica holds advisory lock key=%s",
+                        self._map_lock_key,
+                    )
+                    return True
+            except OperationalError as e:
+                # Best-effort: if DB is unavailable we still attempt generation so the API
+                # remains functional (it may fail later if DB is required for data).
+                logger.warning(
+                    "Could not acquire map-generation lock (db unavailable): %s; proceeding without lock",
+                    e,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not acquire map-generation lock: %s; proceeding without lock",
+                    e,
+                )
+
+            try:
+                output_path = generate_wildfire_map(
+                    center_lat=center_lat,
+                    center_lon=center_lon,
+                    zoom=zoom,
+                    lookback_days=lookback_days,
+                    max_records=max_records,
+                )
+            finally:
+                if have_lock and lock_conn is not None:
+                    try:
+                        with lock_conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT pg_advisory_unlock(%s)", (self._map_lock_key,)
+                            )
+                    except Exception as e:
+                        logger.warning("Failed to release advisory lock: %s", e)
+                if lock_conn is not None:
+                    try:
+                        lock_conn.close()
+                    except Exception:
+                        pass
 
             self.maps_generated += 1
             self.last_map_time = time.time()
@@ -180,9 +260,37 @@ class MapGenerationConsumer:
             # 3. Only regenerate if significant changes occurred
             return self.generate_map()
 
+        except UnicodeDecodeError as e:
+            logger.error("Processed event message is not valid UTF-8: %s", e)
+            env = build_dlq_envelope(
+                source="map_generation_consumer",
+                failure_reason="processed_event_utf8_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self._dlq_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON message: {e}")
-            return False
+            env = build_dlq_envelope(
+                source="map_generation_consumer",
+                failure_reason="processed_event_json_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self._dlq_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Error processing processed event: {e}")
@@ -222,9 +330,37 @@ class MapGenerationConsumer:
                 max_records=max_records,
             )
 
+        except UnicodeDecodeError as e:
+            logger.error("Map command message is not valid UTF-8: %s", e)
+            env = build_dlq_envelope(
+                source="map_generation_consumer",
+                failure_reason="map_command_utf8_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self._dlq_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON command: {e}")
-            return False
+            env = build_dlq_envelope(
+                source="map_generation_consumer",
+                failure_reason="map_command_json_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self._dlq_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Error processing map command: {e}")
@@ -268,6 +404,8 @@ class MapGenerationConsumer:
             self.consumer.subscribe(topics)
             logger.info(f"Subscribed to topics: {topics}")
 
+            self._dlq_producer = self._create_dlq_producer()
+
             self.running = True
             processed_count = 0
             error_count = 0
@@ -289,6 +427,8 @@ class MapGenerationConsumer:
                         else:
                             logger.error(f"Kafka error: {message.error()}")
                             error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
                             continue
 
                     # Route message based on topic
@@ -302,9 +442,20 @@ class MapGenerationConsumer:
                         continue
 
                     if success:
+                        try:
+                            self.consumer.commit(message=message, asynchronous=False)
+                        except Exception as e:
+                            logger.error("Offset commit failed: %s", e)
+                            error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
+                            continue
                         processed_count += 1
+                        self._failure_streak = 0
                     else:
                         error_count += 1
+                        self._failure_streak += 1
+                        self._sleep_backoff()
 
                     # Log progress periodically
                     if (processed_count + error_count) % 10 == 0:
@@ -320,6 +471,8 @@ class MapGenerationConsumer:
                 except Exception as e:
                     logger.error(f"Error in consumer loop: {e}")
                     error_count += 1
+                    self._failure_streak += 1
+                    self._sleep_backoff()
                     continue
 
             logger.info(
@@ -333,9 +486,25 @@ class MapGenerationConsumer:
             raise MapConsumerError(error_msg) from e
 
         finally:
+            if self._dlq_producer is not None:
+                try:
+                    self._dlq_producer.flush(timeout=5)
+                except Exception as e:
+                    logger.warning("DLQ producer flush on shutdown: %s", e)
+                self._dlq_producer = None
             if self.consumer:
                 self.consumer.close()
                 logger.info("Kafka consumer closed")
+
+    def _sleep_backoff(self) -> None:
+        """Exponential backoff with jitter to avoid hot-looping on failures."""
+        if self._failure_streak <= 0:
+            return
+        cap = self._backoff_max_sec
+        base = self._backoff_base_sec
+        delay = min(cap, base * (2 ** max(0, self._failure_streak - 1)))
+        jitter = delay * 0.1
+        time.sleep(max(0.0, delay - jitter))
 
 
 def main():

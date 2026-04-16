@@ -15,5 +15,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 # Copy application code
 COPY create_topic.py /app/
 COPY consumer.py /app/
+COPY kafka_dlq.py /app/
 
 CMD ["sh", "-c", "python create_topic.py && python consumer.py"]

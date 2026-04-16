@@ -78,7 +78,14 @@ def start_command_consumer_background():
 def startup_event():
     """Start the command consumer when the service starts."""
     logger.info("Starting ingestion service with event-driven command consumer...")
-    start_command_consumer_background()
+    enabled = os.getenv("INGESTION_COMMAND_CONSUMER_ENABLED", "true").strip().lower()
+    if enabled in {"1", "true", "yes", "y", "on"}:
+        start_command_consumer_background()
+    else:
+        logger.info(
+            "Ingestion command consumer disabled (INGESTION_COMMAND_CONSUMER_ENABLED=%s)",
+            enabled,
+        )
 
 
 @app.on_event("shutdown")

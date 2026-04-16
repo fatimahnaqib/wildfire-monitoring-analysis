@@ -29,11 +29,10 @@ services:
   # -------------------------------
   # Ingestion Service (NASA FIRMS fetch)
   # -------------------------------
-  ingestion:
+  ingestion-api:
     build:
       context: .
       dockerfile: ./services/ingestion/Dockerfile
-    container_name: wildfire_ingestion
     ports:
       - "8000:8000"
     environment:
@@ -42,6 +41,33 @@ services:
       - KAFKA_TOPIC=wildfire_data
       - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
       - KAFKA_RAW_EVENTS_TOPIC=wildfire.raw.events
+      # API-only instance: workers consume commands.
+      - INGESTION_COMMAND_CONSUMER_ENABLED=false
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
+
+  # Scalable ingestion workers (Kafka commands -> raw events)
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: ./services/ingestion/Dockerfile
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-1:9092,kafka-2:9092,kafka-3:9092
+      - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
+      - KAFKA_TOPIC=wildfire_data
+      - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
+      - KAFKA_RAW_EVENTS_TOPIC=wildfire.raw.events
+      - KAFKA_DLQ_TOPIC=wildfire.dlq.events
+      - INGESTION_COMMAND_CONSUMER_ENABLED=true
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -93,6 +119,7 @@ services:
       KAFKA_BROKER: kafka-1:9092,kafka-2:9092,kafka-3:9092
       KAFKA_RAW_EVENTS_TOPIC: wildfire.raw.events
       KAFKA_PROCESSED_EVENTS_TOPIC: wildfire.processed.events
+      KAFKA_DLQ_TOPIC: wildfire.dlq.events
     volumes:
       - ./airflow:/opt/airflow
       - ./services/consumer:/opt/consumer
@@ -120,6 +147,7 @@ services:
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_TOPIC=wildfire.processed.events
       - KAFKA_GROUP_ID=wildfire_group
+      - KAFKA_DLQ_TOPIC=wildfire.dlq.events
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
@@ -149,6 +177,7 @@ services:
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_TOPIC=wildfire.processed.events
       - KAFKA_GROUP_ID=wildfire_group
+      - KAFKA_DLQ_TOPIC=wildfire.dlq.events
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
@@ -169,11 +198,10 @@ services:
   # -------------------------------
   # Map Service (Wildfire visualization)
   # -------------------------------
-  map:
+  map-api:
     build:
       context: .
       dockerfile: ./services/map/Dockerfile
-    container_name: wildfire_map
     ports:
       - "8003:8003"
     environment:
@@ -186,9 +214,44 @@ services:
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_PROCESSED_EVENTS_TOPIC=wildfire.processed.events
       - KAFKA_MAP_COMMAND_TOPIC=wildfire.commands.map.regenerate
+      # API-only instance: workers consume events/commands and regenerate maps.
+      - MAP_CONSUMER_ENABLED=false
       # OSM tiles: root-relative /osm-tiles/... proxied with Referer + User-Agent (see services/map main.py)
       - OSM_TILE_USE_PROXY=true
       # Optional: public URL of this map app for OSM fallback Referer when Origin/Referer are missing
+      - MAP_PUBLIC_BASE_URL=http://localhost:8003
+    volumes:
+      - ./airflow/dashboard:/dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
+
+  # Scalable map workers (processed events / map commands -> regenerate HTML map)
+  map-worker:
+    build:
+      context: .
+      dockerfile: ./services/map/Dockerfile
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=wildfire_db
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - AIRFLOW_DASHBOARD_DIR=/dashboard
+      - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
+      - KAFKA_PROCESSED_EVENTS_TOPIC=wildfire.processed.events
+      - KAFKA_MAP_COMMAND_TOPIC=wildfire.commands.map.regenerate
+      - KAFKA_DLQ_TOPIC=wildfire.dlq.events
+      - MAP_CONSUMER_ENABLED=true
+      - OSM_TILE_USE_PROXY=true
       - MAP_PUBLIC_BASE_URL=http://localhost:8003
     volumes:
       - ./airflow/dashboard:/dashboard
@@ -223,6 +286,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Scheduled logical backups (gzip SQL). Restore: zcat file.sql.gz | psql ...
+  # For HA Postgres, override POSTGRES_HOST to pgpool in docker-compose.ha.yml.
+  postgres-backup:
+    image: postgres:14
+    container_name: wildfire_postgres_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_BACKUP_DATABASES: wildfire_db airflowdb
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SEC: "86400"
+      BACKUP_RETENTION_DAYS: "14"
+    volumes:
+      - ./backups/postgres:/backups
+      - ./postgres/backup:/backup-scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/backup-scripts/backup_loop.sh"]
 
   # Kafka — 3-broker KRaft cluster (RF=3 topics; tolerate broker loss).
   # Uses Confluent's Kafka image because Bitnami no longer publishes pullable tags on Docker Hub.
@@ -345,6 +431,7 @@ services:
     container_name: wildfire_kafka_consumer
     environment:
       KAFKA_BROKER: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_DLQ_TOPIC: wildfire.dlq.events
       KAFKA_TOPIC_REPLICATION_FACTOR: "3"
       KAFKA_LEGACY_TOPIC_PARTITIONS: "3"
     depends_on:
@@ -374,7 +461,7 @@ services:
       kafka-topics-init:
         condition: service_completed_successfully
     environment:
-      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflowdb
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: True
       PYTHONPATH: /opt/airflow
@@ -399,6 +486,22 @@ services:
     <<: *airflow-common
     container_name: airflow_scheduler
     command: scheduler
+    depends_on:
+      airflow-webserver:
+        condition: service_healthy
+
+  # Second scheduler for redundancy (safe with LocalExecutor; only one will actively schedule).
+  airflow-scheduler-2:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-webserver:
+        condition: service_healthy
+
+  # Triggerer supports deferrable operators and improves robustness in newer Airflow.
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
     depends_on:
       airflow-webserver:
         condition: service_healthy
