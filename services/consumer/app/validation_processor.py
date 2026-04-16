@@ -80,7 +80,9 @@ class ValidationProcessor:
         self.producer = None
         self.running = False
         self._failure_streak = 0
-        self._backoff_base_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5"))
+        self._backoff_base_sec = float(
+            os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5")
+        )
         self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
         self._produce_flush_timeout_sec = float(
             os.getenv("VALIDATION_PRODUCER_FLUSH_TIMEOUT_SEC", "10")

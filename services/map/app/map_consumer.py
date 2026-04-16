@@ -77,7 +77,9 @@ class MapGenerationConsumer:
         self.maps_generated = 0
         self.last_map_time = None
         self._failure_streak = 0
-        self._backoff_base_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5"))
+        self._backoff_base_sec = float(
+            os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5")
+        )
         self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
 
         # Postgres advisory lock for map generation (prevents multiple replicas
@@ -170,7 +172,9 @@ class MapGenerationConsumer:
                 lock_conn = psycopg2.connect(**self._pg_config)
                 lock_conn.autocommit = True
                 with lock_conn.cursor() as cur:
-                    cur.execute("SELECT pg_try_advisory_lock(%s)", (self._map_lock_key,))
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (self._map_lock_key,)
+                    )
                     have_lock = bool(cur.fetchone()[0])
                 if not have_lock:
                     logger.info(
