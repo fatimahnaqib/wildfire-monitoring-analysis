@@ -1,0 +1,232 @@
+services:
+  # ---------------------------------------------------------
+  # HA Postgres (primary + replica) behind Pgpool-II
+  #
+  # This is a production-oriented pattern for removing the
+  # single-instance Postgres SPOF in the default compose file.
+  #
+  # Usage:
+  #   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+  #
+  # Notes:
+  # - Pgpool presents a single hostname `pgpool` to apps.
+  # - Failover is handled by repmgr + pgpool in this stack.
+  # - For real production, prefer a managed Postgres HA service or Kubernetes operator.
+  # ---------------------------------------------------------
+
+  # Keep a placeholder `postgres` service so existing `depends_on: postgres`
+  # entries in docker-compose.yml remain valid. All apps are repointed to
+  # `pgpool` below, so this container is not used for data.
+  postgres:
+    image: alpine:3.20
+    command: ["sh", "-c", "sleep infinity"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      timeout: 2s
+      retries: 1
+
+  postgresql-primary:
+    image: bitnami/postgresql-repmgr:16
+    environment:
+      - POSTGRESQL_POSTGRES_PASSWORD=airflow
+      - POSTGRESQL_USERNAME=airflow
+      - POSTGRESQL_PASSWORD=airflow
+      - POSTGRESQL_DATABASE=airflowdb
+      - POSTGRESQL_NUM_SYNCHRONOUS_REPLICAS=1
+      - REPMGR_PRIMARY_HOST=postgresql-primary
+      - REPMGR_PRIMARY_PORT=5432
+      - REPMGR_PARTNER_NODES=postgresql-primary,postgresql-replica
+      - REPMGR_NODE_NAME=postgresql-primary
+      - REPMGR_NODE_NETWORK_NAME=postgresql-primary
+      - REPMGR_USERNAME=repmgr
+      - REPMGR_PASSWORD=repmgrpass
+      - REPMGR_DATABASE=repmgr
+    volumes:
+      - postgresql_primary_data:/bitnami/postgresql
+      # Keep your existing schema init. It runs once on primary bootstrap.
+      - ./postgres/init/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflowdb || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgresql-replica:
+    image: bitnami/postgresql-repmgr:16
+    environment:
+      - POSTGRESQL_POSTGRES_PASSWORD=airflow
+      - POSTGRESQL_USERNAME=airflow
+      - POSTGRESQL_PASSWORD=airflow
+      - POSTGRESQL_DATABASE=airflowdb
+      - REPMGR_PRIMARY_HOST=postgresql-primary
+      - REPMGR_PRIMARY_PORT=5432
+      - REPMGR_PARTNER_NODES=postgresql-primary,postgresql-replica
+      - REPMGR_NODE_NAME=postgresql-replica
+      - REPMGR_NODE_NETWORK_NAME=postgresql-replica
+      - REPMGR_USERNAME=repmgr
+      - REPMGR_PASSWORD=repmgrpass
+      - REPMGR_DATABASE=repmgr
+    volumes:
+      - postgresql_replica_data:/bitnami/postgresql
+    depends_on:
+      postgresql-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflowdb || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  pgpool:
+    image: bitnami/pgpool:4
+    ports:
+      - "5432:5432"
+    environment:
+      - PGPOOL_BACKEND_NODES=0:postgresql-primary:5432,1:postgresql-replica:5432
+      - PGPOOL_SR_CHECK_USER=airflow
+      - PGPOOL_SR_CHECK_PASSWORD=airflow
+      - PGPOOL_POSTGRES_USERNAME=airflow
+      - PGPOOL_POSTGRES_PASSWORD=airflow
+      - PGPOOL_ADMIN_USERNAME=admin
+      - PGPOOL_ADMIN_PASSWORD=adminpass
+      - PGPOOL_ENABLE_LOAD_BALANCING=no
+      - PGPOOL_ENABLE_LOG_CONNECTIONS=yes
+      - PGPOOL_ENABLE_LOG_HOSTNAME=yes
+    depends_on:
+      postgresql-primary:
+        condition: service_healthy
+      postgresql-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U airflow -d airflowdb || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------
+  # Point existing services at Pgpool via environment overrides
+  # ---------------------------------------------------------
+  ingestion-api:
+    environment:
+      - POSTGRES_HOST=pgpool
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=wildfire_db
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  ingestion-worker:
+    environment:
+      - POSTGRES_HOST=pgpool
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=wildfire_db
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  producer:
+    environment:
+      - POSTGRES_HOST=pgpool
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=wildfire_db
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  consumer:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  consumer-api:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  map-api:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  map-worker:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  validation-processor:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  postgres-backup:
+    environment:
+      POSTGRES_HOST: pgpool
+    depends_on:
+      postgres:
+        condition: service_started
+      pgpool:
+        condition: service_healthy
+
+  kafka_consumer:
+    environment:
+      - POSTGRES_HOST=pgpool
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  airflow-webserver:
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  airflow-scheduler:
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  airflow-scheduler-2:
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  airflow-triggerer:
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+  airflow-init:
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+    depends_on:
+      pgpool:
+        condition: service_healthy
+
+volumes:
+  postgresql_primary_data:
+  postgresql_replica_data:
+

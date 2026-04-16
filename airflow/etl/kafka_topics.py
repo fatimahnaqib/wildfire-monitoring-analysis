@@ -7,10 +7,15 @@ Topics follow a clear naming convention:
 - wildfire.processed.* - Processed/validated events
 - wildfire.commands.* - Commands to trigger actions
 - wildfire.map.* - Map-related events
+- wildfire.dlq.* - Dead-letter / failed messages for operations and replay
 
 Replication factor and partition counts are driven by environment variables so the
 same code works against a single-broker dev stack (RF=1) or a multi-broker cluster
 (RF=3, more partitions for consumer scaling).
+
+Per-topic retention.ms in each topic config defines how long Kafka retains
+messages (DR boundary if downstream storage is lost). Compose brokers set
+default replication and min in-sync replicas (e.g. KAFKA_DEFAULT_REPLICATION_FACTOR).
 """
 
 import logging
@@ -97,6 +102,15 @@ def get_topic_definitions() -> Dict[str, Dict[str, Any]]:
                 "compression.type": "gzip",
             },
             "description": "Legacy topic - will be deprecated",
+        },
+        "wildfire.dlq.events": {
+            "num_partitions": max(3, min(event_partitions, 6)),
+            "replication_factor": replication_factor,
+            "config": {
+                "retention.ms": 1209600000,
+                "compression.type": "gzip",
+            },
+            "description": "Dead-letter queue for validation failures, parse errors, and bad commands",
         },
     }
 

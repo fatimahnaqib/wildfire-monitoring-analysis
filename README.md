@@ -80,7 +80,19 @@ docker compose restart airflow-webserver
 - API Docs: http://localhost:8000-8003/docs (each service)
 - Generated Maps: `airflow/dashboard/wildfire_map.html`
 
-**Consumer scaling note:** `consumer` workers are scaled without publishing a host port. The HTTP endpoint for `/health` and `/stats` is `consumer-api`, published on the host port configured by `CONSUMER_API_PORT` in `.env` (defaults to **8002**, so typically `http://localhost:8002`).
+**Scaling note (API vs workers):**
+- `consumer` is already designed as a scalable worker (no host port). The HTTP endpoint for `/health` and `/stats` is `consumer-api`, published on the host port configured by `CONSUMER_API_PORT` in `.env` (defaults to **8002**, so typically `http://localhost:8002`).
+- `ingestion-api` and `map-api` are **API-only** containers (they do not run background Kafka consumers).
+- `ingestion-worker` and `map-worker` are the **scalable** worker replicas that run Kafka consumers.
+
+Example scaling:
+
+```bash
+docker compose up -d --build \
+  --scale consumer=3 \
+  --scale ingestion-worker=2 \
+  --scale map-worker=2
+```
 
 ## Kafka: Dev vs Production Notes
 
@@ -157,6 +169,7 @@ wildfire-monitoring-analysis/
 ├── postgres/init/init.sql          # Database schema
 ├── docs/TESTING_EVENT_DRIVEN_WORKFLOW.md  # Testing guide
 └── docker-compose.yml              # Includes kafka-topics-init, validation-processor
+└── docker-compose.ha.yml           # Optional: HA Postgres overlay (pgpool + primary/replica)
 ```
 
 **Design Notes:**
@@ -236,7 +249,7 @@ Records must have all required fields, numeric fields must parse to float, enum 
 After changing ETL or service code, rebuild and restart:
 
 ```bash
-docker compose build ingestion producer consumer map validation-processor
+docker compose build ingestion-api ingestion-worker producer consumer map-api map-worker validation-processor
 docker compose up -d
 ```
 
@@ -300,8 +313,8 @@ docker compose logs kafka-topics-init
 - Consumer reads from `wildfire.processed.events`; check consumer `/stats` and logs
 
 **Map not created / not updating:**
-- The map file is created **on map service startup** (initial empty or current-DB map) and when the map consumer receives Kafka events or a map command.
-- If the map file is missing: restart the map service (`docker compose restart map`) so it runs startup map generation again, or call the API once: `curl -X POST "http://localhost:8003/generate"`.
+- The map file is created **on `map-api` startup** (initial empty or current-DB map) and when `map-worker` receives Kafka events or a map command.
+- If the map file is missing: restart the map API (`docker compose restart map-api`) so it runs startup map generation again, or call the API once: `curl -X POST "http://localhost:8003/generate"`.
 - After the first ingestion run, the map consumer will regenerate the map when processed events arrive. Check map service logs for "Map consumer" and "Generating map".
 
 **Markers show but basemap is blank (gray background):**
@@ -332,6 +345,23 @@ docker compose logs kafka-topics-init
 - **KRaft mode**: Kafka runs without Zookeeper for simplicity
 - **Validation**: Validation processor consumes raw events and produces only valid records to `wildfire.processed.events`
 - **Error handling**: Services retry with exponential backoff; failed records are logged but don't stop pipeline
+
+## High Availability (HA) Options
+
+This repo’s default `docker-compose.yml` runs everything on one Docker host (great for dev), but true HA requires redundancy for stateful components.
+
+**What is already HA in this repo:**
+- **Kafka**: 3-broker KRaft cluster in compose (tolerates 1 broker loss for RF=3 topics with `min.insync.replicas=2`)
+- **Workers**: `consumer`, `ingestion-worker`, `map-worker` can run multiple replicas (consumer groups + map advisory lock)
+- **Airflow scheduler**: two scheduler containers are started (only one actively schedules at a time)
+
+**Postgres HA overlay (removes Postgres SPOF):**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+```
+
+This starts a Postgres primary + replica (repmgr) behind `pgpool` and points all services at `pgpool:5432`.
 
 ## Contributing
 

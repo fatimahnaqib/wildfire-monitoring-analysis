@@ -11,9 +11,11 @@ import logging
 import os
 import signal
 import sys
+import time
 from typing import Any, Optional
 
 from confluent_kafka import Consumer, KafkaError, Producer
+from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
 from etl.validation import is_valid_record
 
 logging.basicConfig(
@@ -34,7 +36,7 @@ class ValidationProcessor:
     1. Consumes from wildfire.raw.events
     2. Validates each record
     3. Produces valid records to wildfire.processed.events
-    4. Optionally sends invalid records to a dead letter queue (future enhancement)
+    4. Sends invalid or unrecoverable raw payloads to the DLQ topic for audit/replay
     """
 
     def __init__(self):
@@ -50,14 +52,16 @@ class ValidationProcessor:
             "KAFKA_PROCESSED_EVENTS_TOPIC", "wildfire.processed.events"
         )
         self.group_id = os.getenv("KAFKA_VALIDATION_GROUP_ID", "wildfire_validation")
+        self.dlq_topic = os.getenv("KAFKA_DLQ_TOPIC", "wildfire.dlq.events")
 
         # Consumer configuration
         self.consumer_config = {
             "bootstrap.servers": self.kafka_broker,
             "group.id": self.group_id,
             "auto.offset.reset": "earliest",  # Process all events
-            "enable.auto.commit": True,
-            "auto.commit.interval.ms": 5000,
+            # Manual commit: only commit offsets after the record is validated
+            # and (if valid) successfully produced to processed topic.
+            "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
         }
@@ -75,6 +79,12 @@ class ValidationProcessor:
         self.consumer = None
         self.producer = None
         self.running = False
+        self._failure_streak = 0
+        self._backoff_base_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5"))
+        self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
+        self._produce_flush_timeout_sec = float(
+            os.getenv("VALIDATION_PRODUCER_FLUSH_TIMEOUT_SEC", "10")
+        )
 
         # Statistics
         self.valid_count = 0
@@ -124,8 +134,9 @@ class ValidationProcessor:
                     callback=self._delivery_callback,
                 )
 
-                # Poll for delivery reports
-                self.producer.poll(0)
+                # Ensure the message is actually delivered before committing offsets.
+                # This makes the processor at-least-once end-to-end.
+                self.producer.flush(timeout=self._produce_flush_timeout_sec)
                 self.valid_count += 1
 
                 logger.debug(
@@ -135,16 +146,38 @@ class ValidationProcessor:
                 )
                 return True
             else:
-                # Invalid record - log but don't produce
-                # TODO: Send to dead letter queue
                 self.invalid_count += 1
-                logger.debug("Skipped invalid record")
-                return True  # Not an error, just invalid data
+                logger.info("Invalid raw event sent to DLQ (failed validation)")
+                env = build_dlq_envelope(
+                    source="validation_processor",
+                    failure_reason="validation_failed",
+                    message=message,
+                    context={"parsed_record": record},
+                )
+                publish_single_dlq(
+                    self.producer,
+                    self.dlq_topic,
+                    env,
+                    flush_timeout=self._produce_flush_timeout_sec,
+                )
+                return True
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON message: {e}")
             self.invalid_count += 1
-            return False
+            env = build_dlq_envelope(
+                source="validation_processor",
+                failure_reason="json_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self.producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._produce_flush_timeout_sec,
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Error processing raw event: {e}")
@@ -227,15 +260,28 @@ class ValidationProcessor:
                         else:
                             logger.error(f"Kafka error: {message.error()}")
                             error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
                             continue
 
                     # Process message
                     success = self.process_raw_event(message)
 
                     if success:
+                        try:
+                            self.consumer.commit(message=message, asynchronous=False)
+                        except Exception as e:
+                            logger.error("Offset commit failed: %s", e)
+                            error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
+                            continue
                         processed_count += 1
+                        self._failure_streak = 0
                     else:
                         error_count += 1
+                        self._failure_streak += 1
+                        self._sleep_backoff()
 
                     # Log progress periodically
                     if (processed_count + error_count) % 100 == 0:
@@ -251,6 +297,8 @@ class ValidationProcessor:
                 except Exception as e:
                     logger.error(f"Error in consumer loop: {e}")
                     error_count += 1
+                    self._failure_streak += 1
+                    self._sleep_backoff()
                     continue
 
             # Flush producer before shutdown
@@ -273,6 +321,16 @@ class ValidationProcessor:
             if self.producer:
                 self.producer.flush(timeout=10)
                 logger.info("Kafka producer closed")
+
+    def _sleep_backoff(self) -> None:
+        """Exponential backoff with jitter to avoid hot-looping on failures."""
+        if self._failure_streak <= 0:
+            return
+        cap = self._backoff_max_sec
+        base = self._backoff_base_sec
+        delay = min(cap, base * (2 ** max(0, self._failure_streak - 1)))
+        jitter = delay * 0.1
+        time.sleep(max(0.0, delay - jitter))
 
 
 def main():

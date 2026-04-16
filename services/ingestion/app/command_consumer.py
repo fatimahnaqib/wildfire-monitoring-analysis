@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -19,6 +20,7 @@ from requests.exceptions import ConnectionError, RequestException, Timeout
 from confluent_kafka import Consumer, KafkaError
 
 from etl.config import config as airflow_config
+from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -56,20 +58,26 @@ class IngestionCommandConsumer:
         self.group_id = os.getenv("KAFKA_INGESTION_GROUP_ID", "wildfire_ingestion")
 
         self.kafka_producer = kafka_producer
+        self.dlq_topic = os.getenv("KAFKA_DLQ_TOPIC", "wildfire.dlq.events")
+        self._dlq_flush_timeout = float(os.getenv("KAFKA_DLQ_FLUSH_TIMEOUT_SEC", "15"))
 
         # Consumer configuration
         self.consumer_config = {
             "bootstrap.servers": self.kafka_broker,
             "group.id": self.group_id,
             "auto.offset.reset": "latest",  # Only process new commands
-            "enable.auto.commit": True,
-            "auto.commit.interval.ms": 5000,
+            # Manual commit: only commit offsets after successful ingestion+produce,
+            # otherwise Kafka may auto-advance offsets and lose commands on failure.
+            "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
         }
 
         self.consumer = None
         self.running = False
+        self._failure_streak = 0
+        self._backoff_base_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_BASE_SEC", "0.5"))
+        self._backoff_max_sec = float(os.getenv("KAFKA_CONSUMER_BACKOFF_MAX_SEC", "30"))
 
         # Setup signal handlers (only valid in main thread)
         self._setup_signal_handlers()
@@ -253,9 +261,37 @@ class IngestionCommandConsumer:
             logger.info(f"Ingestion completed: {production_stats}")
             return True
 
+        except UnicodeDecodeError as e:
+            logger.error("Ingestion command is not valid UTF-8: %s", e)
+            env = build_dlq_envelope(
+                source="ingestion_command_consumer",
+                failure_reason="utf8_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self.kafka_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON command: {e}")
-            return False
+            env = build_dlq_envelope(
+                source="ingestion_command_consumer",
+                failure_reason="json_decode_error",
+                message=message,
+                detail=str(e),
+            )
+            publish_single_dlq(
+                self.kafka_producer,
+                self.dlq_topic,
+                env,
+                flush_timeout=self._dlq_flush_timeout,
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Error processing ingestion command: {e}")
@@ -317,15 +353,29 @@ class IngestionCommandConsumer:
                         else:
                             logger.error(f"Kafka error: {message.error()}")
                             error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
                             continue
 
                     # Process command
                     success = self.process_ingestion_command(message)
 
                     if success:
+                        try:
+                            self.consumer.commit(message=message, asynchronous=False)
+                        except Exception as e:
+                            logger.error("Offset commit failed: %s", e)
+                            error_count += 1
+                            self._failure_streak += 1
+                            self._sleep_backoff()
+                            continue
+
                         processed_count += 1
+                        self._failure_streak = 0
                     else:
                         error_count += 1
+                        self._failure_streak += 1
+                        self._sleep_backoff()
 
                     # Log progress periodically
                     if (processed_count + error_count) % 10 == 0:
@@ -340,6 +390,8 @@ class IngestionCommandConsumer:
                 except Exception as e:
                     logger.error(f"Error in consumer loop: {e}")
                     error_count += 1
+                    self._failure_streak += 1
+                    self._sleep_backoff()
                     continue
 
             logger.info(
@@ -355,3 +407,14 @@ class IngestionCommandConsumer:
             if self.consumer:
                 self.consumer.close()
                 logger.info("Kafka consumer closed")
+
+    def _sleep_backoff(self) -> None:
+        """Exponential backoff with jitter to avoid hot-looping on failures."""
+        if self._failure_streak <= 0:
+            return
+        cap = self._backoff_max_sec
+        base = self._backoff_base_sec
+        # 0.5 * 2^(n-1) capped, with small jitter
+        delay = min(cap, base * (2 ** max(0, self._failure_streak - 1)))
+        jitter = delay * 0.1
+        time.sleep(max(0.0, delay - jitter))
