@@ -109,4 +109,3 @@ def publish_single_dlq(
     """Produce one DLQ record and flush."""
     produce_dlq_message(producer, dlq_topic, envelope)
     producer.flush(timeout=flush_timeout)
-

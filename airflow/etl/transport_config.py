@@ -78,7 +78,10 @@ def kafka_common_client_config() -> Dict[str, str]:
         ("KAFKA_SSL_CERTIFICATE_LOCATION", "ssl.certificate.location"),
         ("KAFKA_SSL_KEY_LOCATION", "ssl.key.location"),
         ("KAFKA_SSL_KEY_PASSWORD", "ssl.key.password"),
-        ("KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM", "ssl.endpoint.identification.algorithm"),
+        (
+            "KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM",
+            "ssl.endpoint.identification.algorithm",
+        ),
         ("KAFKA_SASL_MECHANISMS", "sasl.mechanisms"),
         ("KAFKA_SASL_USERNAME", "sasl.username"),
         ("KAFKA_SASL_PASSWORD", "sasl.password"),

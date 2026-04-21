@@ -42,4 +42,3 @@ def require_api_key(
             detail="Unauthorized",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
