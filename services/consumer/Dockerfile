@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 
 # Copy application code
 COPY services/consumer/app /app/app
+COPY airflow/etl/transport_config.py /app/transport_config.py
 
 EXPOSE 8002
 

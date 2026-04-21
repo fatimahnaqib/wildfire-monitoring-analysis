@@ -6,12 +6,19 @@ set -euo pipefail
 POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_USER="${POSTGRES_USER:-airflow}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-airflow}"
+: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 POSTGRES_BACKUP_DATABASES="${POSTGRES_BACKUP_DATABASES:-wildfire_db airflowdb}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 
 export PGPASSWORD="${POSTGRES_PASSWORD}"
+# libpq TLS for pg_dump: set POSTGRES_SSLMODE (e.g. require) and POSTGRES_SSL_ROOT_CERT when the server uses SSL.
+if [[ -n "${POSTGRES_SSLMODE:-}" ]]; then
+  export PGSSLMODE="${POSTGRES_SSLMODE}"
+fi
+if [[ -n "${POSTGRES_SSL_ROOT_CERT:-}" ]]; then
+  export PGSSLROOTCERT="${POSTGRES_SSL_ROOT_CERT}"
+fi
 mkdir -p "${BACKUP_DIR}"
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"

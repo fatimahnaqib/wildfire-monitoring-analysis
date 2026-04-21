@@ -184,16 +184,16 @@ wildfire-monitoring-analysis/
 
 ```bash
 # Download data
-curl -X POST "http://localhost:8000/ingest?area=-125.0,32.0,-113.0,42.0&day_range=3"
+curl -H "X-API-Key: $WILDFIRE_API_KEY" -X POST "http://localhost:8000/ingest?area=-125.0,32.0,-113.0,42.0&day_range=3"
 
 # Produce to Kafka
-curl -X POST "http://localhost:8001/produce"
+curl -H "X-API-Key: $WILDFIRE_API_KEY" -X POST "http://localhost:8001/produce"
 
 # Generate map
-curl -X POST "http://localhost:8003/generate?center_lat=37.0&center_lon=-120.0&zoom=5"
+curl -H "X-API-Key: $WILDFIRE_API_KEY" -X POST "http://localhost:8003/generate?center_lat=37.0&center_lon=-120.0&zoom=5"
 
 # Check consumer status
-curl http://localhost:8002/stats
+curl -H "X-API-Key: $WILDFIRE_API_KEY" http://localhost:8002/stats
 ```
 
 **Health Checks:**
@@ -206,12 +206,24 @@ Prometheus metrics at `/metrics` on each service. Tracks request counts, process
 
 ## Configuration
 
-**Environment Variables** (set in `docker-compose.yml`):
+**Secrets / sensitive configuration** (do **not** commit real values to git):
+
+Create a local `.env` file (see `.env.example`). `docker-compose.yml` wires these into containers via `${VAR}` interpolation.
+
+- `WILDFIRE_API_KEY`: shared secret for protected FastAPI routes (`X-API-Key` / `Authorization: Bearer ...`)
+- `FIRMS_MAP_KEY`: NASA FIRMS map key (required; no default is shipped in code anymore)
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`: database credentials (required for services + backups)
+- `AIRFLOW_DB`: Airflow metadata database name (defaults to `airflowdb` in compose if unset)
+- `AIRFLOW_ADMIN_USERNAME`, `AIRFLOW_ADMIN_EMAIL`, `AIRFLOW_ADMIN_PASSWORD`: bootstrap admin for `airflow-init` (required; no default password)
+
+**Other environment variables** (commonly set in `.env` / compose):
 
 - `FIRMS_AREA`, `FIRMS_DAY_RANGE`: NASA API region and lookback
 - `KAFKA_TOPIC`: Consumer reads from `wildfire.processed.events` in event-driven mode
 - `KAFKA_INGESTION_COMMAND_TOPIC`, `KAFKA_RAW_EVENTS_TOPIC`, `KAFKA_PROCESSED_EVENTS_TOPIC`, `KAFKA_MAP_COMMAND_TOPIC`: Event-driven topic names
-- `POSTGRES_*`: Database credentials
+- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_HOST_PORT`: connectivity / host port mapping
+
+If you use the HA Postgres overlay (`docker-compose.ha.yml`), also set the HA-specific variables documented in `.env.example`.
 
 **DAG Parameters** (editable in Airflow UI):
 

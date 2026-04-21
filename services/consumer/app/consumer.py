@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
 
 from app.kafka_dlq import build_dlq_envelope, publish_dlq_envelopes
+from transport_config import (
+    kafka_common_client_config,
+    kafka_config_for_log,
+    postgres_connect_kwargs,
+)
 from psycopg2 import OperationalError, DatabaseError, IntegrityError
 from psycopg2.extras import execute_values
 from psycopg2.pool import SimpleConnectionPool
@@ -66,9 +71,10 @@ class WildfireConsumer:
         self.pg_config = {
             "dbname": os.getenv("POSTGRES_DB", "wildfire_db"),
             "user": os.getenv("POSTGRES_USER", "airflow"),
-            "password": os.getenv("POSTGRES_PASSWORD", "airflow"),
+            "password": os.environ["POSTGRES_PASSWORD"],
             "host": os.getenv("POSTGRES_HOST", "postgres"),
             "port": os.getenv("POSTGRES_PORT", "5432"),
+            **postgres_connect_kwargs(),
         }
 
         self.batch_size = max(1, int(os.getenv("CONSUMER_BATCH_SIZE", "100")))
@@ -87,6 +93,7 @@ class WildfireConsumer:
             "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
+            **kafka_common_client_config(),
         }
 
         self.consumer = None
@@ -256,6 +263,7 @@ class WildfireConsumer:
                 "retries": 3,
                 "retry.backoff.ms": 1000,
                 "compression.type": "gzip",
+                **kafka_common_client_config(),
             }
         )
 
@@ -307,7 +315,10 @@ class WildfireConsumer:
         """
         try:
             consumer = Consumer(self.consumer_config)
-            logger.info(f"Kafka consumer created with config: {self.consumer_config}")
+            logger.info(
+                "Kafka consumer created with config: %s",
+                kafka_config_for_log(self.consumer_config),
+            )
             return consumer
 
         except Exception as e:

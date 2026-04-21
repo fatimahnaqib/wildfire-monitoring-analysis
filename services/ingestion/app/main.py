@@ -7,6 +7,7 @@ import threading
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, Query
+from fastapi import Depends
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from confluent_kafka import Producer, KafkaError
@@ -14,8 +15,10 @@ import requests
 from requests.exceptions import RequestException, Timeout, ConnectionError
 
 from etl.config import config as airflow_config
+from etl.transport_config import kafka_common_client_config, kafka_config_for_log
 from etl.validation import is_valid_record
 from app.command_consumer import IngestionCommandConsumer
+from app.security import require_api_key
 
 
 logger = logging.getLogger("ingestion_service")
@@ -176,10 +179,14 @@ def create_kafka_producer() -> Producer:
         "retries": 3,
         "retry.backoff.ms": 1000,
         "compression.type": "gzip",
+        **kafka_common_client_config(),
     }
 
     producer = Producer(producer_config)
-    logger.info(f"Kafka producer created with config: {producer_config}")
+    logger.info(
+        "Kafka producer created with config: %s",
+        kafka_config_for_log(producer_config),
+    )
     return producer
 
 
@@ -255,6 +262,7 @@ def ingest(
     source: Optional[str] = Query(
         default=None, description="FIRMS source e.g. VIIRS_SNPP_NRT"
     ),
+    _: None = Depends(require_api_key),
 ) -> JSONResponse:
     try:
         # Build a custom URL if query params provided, otherwise rely on config

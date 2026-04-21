@@ -20,6 +20,11 @@ from confluent_kafka import Consumer, KafkaError, Producer
 from psycopg2 import OperationalError
 from etl.generate_map import generate_wildfire_map
 from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
+from etl.transport_config import (
+    kafka_common_client_config,
+    kafka_config_for_log,
+    postgres_connect_kwargs,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -70,6 +75,7 @@ class MapGenerationConsumer:
             "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
+            **kafka_common_client_config(),
         }
 
         self.consumer = None
@@ -87,9 +93,10 @@ class MapGenerationConsumer:
         self._pg_config = {
             "dbname": os.getenv("POSTGRES_DB", "wildfire_db"),
             "user": os.getenv("POSTGRES_USER", "airflow"),
-            "password": os.getenv("POSTGRES_PASSWORD", "airflow"),
+            "password": os.environ["POSTGRES_PASSWORD"],
             "host": os.getenv("POSTGRES_HOST", "postgres"),
             "port": int(os.getenv("POSTGRES_PORT", "5432")),
+            **postgres_connect_kwargs(),
         }
         # Any stable 64-bit integer works; keep it constant across deployments.
         self._map_lock_key = int(os.getenv("MAP_GENERATION_LOCK_KEY", "94531021"))
@@ -124,6 +131,7 @@ class MapGenerationConsumer:
                 "retries": 3,
                 "retry.backoff.ms": 1000,
                 "compression.type": "gzip",
+                **kafka_common_client_config(),
             }
         )
 
@@ -375,7 +383,10 @@ class MapGenerationConsumer:
         """
         try:
             consumer = Consumer(self.consumer_config)
-            logger.info(f"Kafka consumer created with config: {self.consumer_config}")
+            logger.info(
+                "Kafka consumer created with config: %s",
+                kafka_config_for_log(self.consumer_config),
+            )
             return consumer
 
         except Exception as e:

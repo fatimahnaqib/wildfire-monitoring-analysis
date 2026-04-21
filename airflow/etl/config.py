@@ -8,6 +8,8 @@ API endpoints, and file paths for the wildfire ETL pipeline.
 import os
 import logging
 
+from etl.transport_config import postgres_connection_query_string
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ class WildfireConfig:
 
     def __init__(self):
         """Initialize configuration with environment variables or defaults."""
-        self.map_key = os.getenv("FIRMS_MAP_KEY", "6384efb79923adced5331fd947f43da1")
+        self.map_key = os.environ["FIRMS_MAP_KEY"]
         self.source = os.getenv("FIRMS_SOURCE", "VIIRS_SNPP_NRT")
         self.area = os.getenv("FIRMS_AREA", "-125.0,32.0,-113.0,42.0")
         self.day_range = os.getenv("FIRMS_DAY_RANGE", "3")
@@ -40,7 +42,7 @@ class WildfireConfig:
         self.postgres_port = os.getenv("POSTGRES_PORT", "5432")
         self.postgres_db = os.getenv("POSTGRES_DB", "wildfire_db")
         self.postgres_user = os.getenv("POSTGRES_USER", "airflow")
-        self.postgres_password = os.getenv("POSTGRES_PASSWORD", "airflow")
+        self.postgres_password = os.environ["POSTGRES_PASSWORD"]
 
         # OpenStreetMap tile policy (browser tiles cannot set User-Agent; optional HTTP proxy
         # on the map service adds Referer + app User-Agent on server-to-OSM requests).
@@ -118,11 +120,12 @@ class WildfireConfig:
 
     @property
     def postgres_connection_string(self) -> str:
-        """Get PostgreSQL connection string."""
-        return (
+        """Get PostgreSQL connection string (optional sslmode / certs via POSTGRES_SSL* env)."""
+        base = (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+        return base + postgres_connection_query_string()
 
 
 # Global configuration instance
