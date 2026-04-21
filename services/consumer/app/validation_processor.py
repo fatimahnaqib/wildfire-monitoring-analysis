@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from confluent_kafka import Consumer, KafkaError, Producer
 from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
+from etl.transport_config import kafka_common_client_config, kafka_config_for_log
 from etl.validation import is_valid_record
 
 logging.basicConfig(
@@ -64,6 +65,7 @@ class ValidationProcessor:
             "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
+            **kafka_common_client_config(),
         }
 
         # Producer configuration
@@ -74,6 +76,7 @@ class ValidationProcessor:
             "retries": 3,
             "retry.backoff.ms": 1000,
             "compression.type": "gzip",
+            **kafka_common_client_config(),
         }
 
         self.consumer = None
@@ -195,7 +198,10 @@ class ValidationProcessor:
         """
         try:
             consumer = Consumer(self.consumer_config)
-            logger.info(f"Kafka consumer created with config: {self.consumer_config}")
+            logger.info(
+                "Kafka consumer created with config: %s",
+                kafka_config_for_log(self.consumer_config),
+            )
             return consumer
 
         except Exception as e:
@@ -211,7 +217,10 @@ class ValidationProcessor:
         """
         try:
             producer = Producer(self.producer_config)
-            logger.info(f"Kafka producer created with config: {self.producer_config}")
+            logger.info(
+                "Kafka producer created with config: %s",
+                kafka_config_for_log(self.producer_config),
+            )
             return producer
 
         except Exception as e:

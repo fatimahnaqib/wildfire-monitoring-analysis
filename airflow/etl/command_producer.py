@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 
 from confluent_kafka import KafkaError, Producer
 
+from etl.transport_config import kafka_common_client_config, kafka_config_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,10 +42,14 @@ def create_command_producer(bootstrap_servers: str) -> Producer:
             "retries": 3,
             "retry.backoff.ms": 1000,
             "compression.type": "gzip",
+            **kafka_common_client_config(),
         }
 
         producer = Producer(producer_config)
-        logger.info(f"Command producer created with config: {producer_config}")
+        logger.info(
+            "Command producer created with config: %s",
+            kafka_config_for_log(producer_config),
+        )
         return producer
 
     except Exception as e:

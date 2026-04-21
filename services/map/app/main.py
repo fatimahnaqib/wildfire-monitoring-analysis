@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from typing import Dict, Union
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Depends
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -18,6 +18,7 @@ from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from etl.config import config as wf_config
 from etl.generate_map import generate_wildfire_map
 from app.map_consumer import MapGenerationConsumer
+from app.security import require_api_key
 
 
 logger = logging.getLogger("map_service")
@@ -205,6 +206,7 @@ def generate_map(
         default=int(os.getenv("MAP_MAX_RECORDS", "5000")),
         description="Maximum number of records to plot",
     ),
+    _: None = Depends(require_api_key),
 ) -> JSONResponse:
     """
     Generate the wildfire map and return metadata.

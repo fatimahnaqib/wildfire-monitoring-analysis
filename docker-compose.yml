@@ -10,6 +10,15 @@ services:
     command: ["python", "/opt/airflow/scripts/ensure_kafka_topics.py"]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-}
+      KAFKA_SSL_CA_LOCATION: ${KAFKA_SSL_CA_LOCATION:-}
+      KAFKA_SSL_CERTIFICATE_LOCATION: ${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      KAFKA_SSL_KEY_LOCATION: ${KAFKA_SSL_KEY_LOCATION:-}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:-}
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      KAFKA_SASL_MECHANISMS: ${KAFKA_SASL_MECHANISMS:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
       KAFKA_TOPIC_REPLICATION_FACTOR: "3"
       KAFKA_EVENT_TOPIC_PARTITIONS: "6"
       KAFKA_COMMAND_TOPIC_PARTITIONS: "3"
@@ -24,6 +33,8 @@ services:
         condition: service_healthy
       kafka-3:
         condition: service_healthy
+    networks:
+      - backend
     restart: "no"
 
   # -------------------------------
@@ -34,15 +45,29 @@ services:
       context: .
       dockerfile: ./services/ingestion/Dockerfile
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_TOPIC=wildfire_data
       - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
       - KAFKA_RAW_EVENTS_TOPIC=wildfire.raw.events
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       # API-only instance: workers consume commands.
       - INGESTION_COMMAND_CONSUMER_ENABLED=false
+      - AUTH_ENABLED=true
+      - WILDFIRE_API_KEY=${WILDFIRE_API_KEY}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -54,6 +79,9 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+    networks:
+      - app
+      - backend
 
   # Scalable ingestion workers (Kafka commands -> raw events)
   ingestion-worker:
@@ -67,7 +95,19 @@ services:
       - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
       - KAFKA_RAW_EVENTS_TOPIC=wildfire.raw.events
       - KAFKA_DLQ_TOPIC=wildfire.dlq.events
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - INGESTION_COMMAND_CONSUMER_ENABLED=true
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -79,6 +119,8 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+    networks:
+      - backend
 
   # -------------------------------
   # Producer Service (HTTP trigger -> Kafka ingestion commands; no shared CSV)
@@ -89,10 +131,24 @@ services:
       dockerfile: ./services/producer/Dockerfile
     container_name: wildfire_producer
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_INGESTION_COMMAND_TOPIC=wildfire.commands.ingest
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - AUTH_ENABLED=true
+      - WILDFIRE_API_KEY=${WILDFIRE_API_KEY}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -104,6 +160,9 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+    networks:
+      - app
+      - backend
 
   # -------------------------------
   # Validation Processor (raw events -> processed events)
@@ -120,6 +179,15 @@ services:
       KAFKA_RAW_EVENTS_TOPIC: wildfire.raw.events
       KAFKA_PROCESSED_EVENTS_TOPIC: wildfire.processed.events
       KAFKA_DLQ_TOPIC: wildfire.dlq.events
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-}
+      KAFKA_SSL_CA_LOCATION: ${KAFKA_SSL_CA_LOCATION:-}
+      KAFKA_SSL_CERTIFICATE_LOCATION: ${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      KAFKA_SSL_KEY_LOCATION: ${KAFKA_SSL_KEY_LOCATION:-}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:-}
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      KAFKA_SASL_MECHANISMS: ${KAFKA_SASL_MECHANISMS:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
     volumes:
       - ./airflow:/opt/airflow
       - ./services/consumer:/opt/consumer
@@ -133,6 +201,8 @@ services:
       kafka-topics-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    networks:
+      - backend
 
   # -------------------------------
   # Consumer Service (Kafka consumer with health/metrics)
@@ -151,8 +221,21 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-}
+      - POSTGRES_SSL_ROOT_CERT=${POSTGRES_SSL_ROOT_CERT:-}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT:-}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY:-}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -164,6 +247,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+    networks:
+      - backend
 
   # Single instance exposing HTTP API for stats/health on localhost:8002
   consumer-api:
@@ -172,7 +257,7 @@ services:
       dockerfile: ./services/consumer/Dockerfile
     ports:
       # Host port is configurable: set CONSUMER_API_PORT in `.env` if 8002 is taken.
-      - "${CONSUMER_API_PORT:-8002}:8002"
+      - "127.0.0.1:${CONSUMER_API_PORT:-8002}:8002"
     environment:
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_TOPIC=wildfire.processed.events
@@ -181,8 +266,23 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - AUTH_ENABLED=true
+      - WILDFIRE_API_KEY=${WILDFIRE_API_KEY}
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-}
+      - POSTGRES_SSL_ROOT_CERT=${POSTGRES_SSL_ROOT_CERT:-}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT:-}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY:-}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -194,6 +294,9 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+    networks:
+      - app
+      - backend
 
   # -------------------------------
   # Map Service (Wildfire visualization)
@@ -203,13 +306,14 @@ services:
       context: .
       dockerfile: ./services/map/Dockerfile
     ports:
-      - "8003:8003"
+      - "127.0.0.1:8003:8003"
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY}
       - AIRFLOW_DASHBOARD_DIR=/dashboard
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_PROCESSED_EVENTS_TOPIC=wildfire.processed.events
@@ -220,6 +324,21 @@ services:
       - OSM_TILE_USE_PROXY=true
       # Optional: public URL of this map app for OSM fallback Referer when Origin/Referer are missing
       - MAP_PUBLIC_BASE_URL=http://localhost:8003
+      - AUTH_ENABLED=true
+      - WILDFIRE_API_KEY=${WILDFIRE_API_KEY}
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-}
+      - POSTGRES_SSL_ROOT_CERT=${POSTGRES_SSL_ROOT_CERT:-}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT:-}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY:-}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     volumes:
       - ./airflow/dashboard:/dashboard
     depends_on:
@@ -233,6 +352,9 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+    networks:
+      - app
+      - backend
 
   # Scalable map workers (processed events / map commands -> regenerate HTML map)
   map-worker:
@@ -243,8 +365,9 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - FIRMS_MAP_KEY=${FIRMS_MAP_KEY}
       - AIRFLOW_DASHBOARD_DIR=/dashboard
       - KAFKA_BROKER=kafka-1:9092,kafka-2:9092,kafka-3:9092
       - KAFKA_PROCESSED_EVENTS_TOPIC=wildfire.processed.events
@@ -253,6 +376,19 @@ services:
       - MAP_CONSUMER_ENABLED=true
       - OSM_TILE_USE_PROXY=true
       - MAP_PUBLIC_BASE_URL=http://localhost:8003
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-}
+      - POSTGRES_SSL_ROOT_CERT=${POSTGRES_SSL_ROOT_CERT:-}
+      - POSTGRES_SSL_CERT=${POSTGRES_SSL_CERT:-}
+      - POSTGRES_SSL_KEY=${POSTGRES_SSL_KEY:-}
+      - KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL:-}
+      - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
+      - KAFKA_SSL_CERTIFICATE_LOCATION=${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      - KAFKA_SSL_KEY_LOCATION=${KAFKA_SSL_KEY_LOCATION:-}
+      - KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD:-}
+      - KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM=${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      - KAFKA_SASL_MECHANISMS=${KAFKA_SASL_MECHANISMS:-}
+      - KAFKA_SASL_USERNAME=${KAFKA_SASL_USERNAME:-}
+      - KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD:-}
     volumes:
       - ./airflow/dashboard:/dashboard
     depends_on:
@@ -266,6 +402,8 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+    networks:
+      - backend
 
   # -------------------------------
   # PostgreSQL for Airflow & Wildfire DB
@@ -274,18 +412,20 @@ services:
     image: postgres:14
     container_name: wildfire_postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - backend
 
   # Scheduled logical backups (gzip SQL). Restore: zcat file.sql.gz | psql ...
   # For HA Postgres, override POSTGRES_HOST to pgpool in docker-compose.ha.yml.
@@ -296,8 +436,10 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
+      POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT:-}
       POSTGRES_BACKUP_DATABASES: wildfire_db airflowdb
       BACKUP_DIR: /backups
       BACKUP_INTERVAL_SEC: "86400"
@@ -309,6 +451,8 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["/bin/bash", "/backup-scripts/backup_loop.sh"]
+    networks:
+      - backend
 
   # Kafka — 3-broker KRaft cluster (RF=3 topics; tolerate broker loss).
   # Uses Confluent's Kafka image because Bitnami no longer publishes pullable tags on Docker Hub.
@@ -317,7 +461,7 @@ services:
     hostname: kafka-1
     container_name: wildfire_kafka_1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       CLUSTER_ID: GbH0TnUuRw-uXmu-MRTKIg
       KAFKA_NODE_ID: 1
@@ -343,13 +487,15 @@ services:
       timeout: 10s
       retries: 8
       start_period: 60s
+    networks:
+      - backend
 
   kafka-2:
     image: confluentinc/cp-kafka:7.8.0
     hostname: kafka-2
     container_name: wildfire_kafka_2
     ports:
-      - "9094:9092"
+      - "127.0.0.1:9094:9092"
     environment:
       CLUSTER_ID: GbH0TnUuRw-uXmu-MRTKIg
       KAFKA_NODE_ID: 2
@@ -375,13 +521,15 @@ services:
       timeout: 10s
       retries: 8
       start_period: 60s
+    networks:
+      - backend
 
   kafka-3:
     image: confluentinc/cp-kafka:7.8.0
     hostname: kafka-3
     container_name: wildfire_kafka_3
     ports:
-      - "9095:9092"
+      - "127.0.0.1:9095:9092"
     environment:
       CLUSTER_ID: GbH0TnUuRw-uXmu-MRTKIg
       KAFKA_NODE_ID: 3
@@ -407,12 +555,14 @@ services:
       timeout: 10s
       retries: 8
       start_period: 60s
+    networks:
+      - backend
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: wildfire_kafka_ui
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: wildfire
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
@@ -424,6 +574,9 @@ services:
         condition: service_healthy
       kafka-3:
         condition: service_healthy
+    networks:
+      - app
+      - backend
 
   # Standalone Kafka consumer (creates topic if needed)
   kafka_consumer:
@@ -434,6 +587,24 @@ services:
       KAFKA_DLQ_TOPIC: wildfire.dlq.events
       KAFKA_TOPIC_REPLICATION_FACTOR: "3"
       KAFKA_LEGACY_TOPIC_PARTITIONS: "3"
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-}
+      KAFKA_SSL_CA_LOCATION: ${KAFKA_SSL_CA_LOCATION:-}
+      KAFKA_SSL_CERTIFICATE_LOCATION: ${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      KAFKA_SSL_KEY_LOCATION: ${KAFKA_SSL_KEY_LOCATION:-}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:-}
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      KAFKA_SASL_MECHANISMS: ${KAFKA_SASL_MECHANISMS:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: wildfire_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
+      POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT:-}
+      POSTGRES_SSL_CERT: ${POSTGRES_SSL_CERT:-}
+      POSTGRES_SSL_KEY: ${POSTGRES_SSL_KEY:-}
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -446,6 +617,8 @@ services:
       postgres:
         condition: service_started
     restart: always
+    networks:
+      - backend
 
   # -------------------------------
   # Apache Airflow Webserver
@@ -462,20 +635,42 @@ services:
         condition: service_completed_successfully
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflowdb
-      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: True
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "False"
       PYTHONPATH: /opt/airflow
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-}
+      KAFKA_SSL_CA_LOCATION: ${KAFKA_SSL_CA_LOCATION:-}
+      KAFKA_SSL_CERTIFICATE_LOCATION: ${KAFKA_SSL_CERTIFICATE_LOCATION:-}
+      KAFKA_SSL_KEY_LOCATION: ${KAFKA_SSL_KEY_LOCATION:-}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:-}
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ${KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM:-}
+      KAFKA_SASL_MECHANISMS: ${KAFKA_SASL_MECHANISMS:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: wildfire_db
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
+      POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT:-}
+      POSTGRES_SSL_CERT: ${POSTGRES_SSL_CERT:-}
+      POSTGRES_SSL_KEY: ${POSTGRES_SSL_KEY:-}
     volumes:
       - ./airflow:/opt/airflow
       - ./airflow/requirements.txt:/requirements.txt
+    networks:
+      - app
+      - backend
 
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow_webserver
     command: webserver
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -509,10 +704,15 @@ services:
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
-    command: -c "airflow db init && airflow users create --username admin --firstname admin --lastname admin --role Admin --email admin@example.com --password admin"
+    command: -c "airflow db init && airflow users create --username ${AIRFLOW_ADMIN_USERNAME} --firstname admin --lastname admin --role Admin --email ${AIRFLOW_ADMIN_EMAIL} --password ${AIRFLOW_ADMIN_PASSWORD}"
 
 volumes:
   postgres_data:
   kafka_data_1:
   kafka_data_2:
   kafka_data_3:
+
+networks:
+  app: {}
+  backend:
+    internal: true

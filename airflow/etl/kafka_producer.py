@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, Callable
 from confluent_kafka import Producer, KafkaError
 
 from etl.config import config
+from etl.transport_config import kafka_common_client_config, kafka_config_for_log
 from etl.validation import is_valid_record, get_validation_summary
 
 # Configure logging
@@ -60,10 +61,14 @@ def create_kafka_producer() -> Producer:
             "retries": 3,
             "retry.backoff.ms": 1000,
             "compression.type": "gzip",
+            **kafka_common_client_config(),
         }
 
         producer = Producer(producer_config)
-        logger.info(f"Kafka producer created with config: {producer_config}")
+        logger.info(
+            "Kafka producer created with config: %s",
+            kafka_config_for_log(producer_config),
+        )
         return producer
 
     except Exception as e:

@@ -4,10 +4,12 @@ import threading
 import time
 
 from fastapi import FastAPI
+from fastapi import Depends
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.consumer import WildfireConsumer
+from app.security import require_api_key
 
 logger = logging.getLogger("consumer_service")
 logging.basicConfig(
@@ -86,7 +88,7 @@ def metrics() -> PlainTextResponse:
 
 
 @app.post("/start")
-def start_consumer() -> JSONResponse:
+def start_consumer(_: None = Depends(require_api_key)) -> JSONResponse:
     """Start the consumer service."""
     try:
         start_consumer_background()
@@ -96,7 +98,7 @@ def start_consumer() -> JSONResponse:
 
 
 @app.post("/stop")
-def stop_consumer_endpoint() -> JSONResponse:
+def stop_consumer_endpoint(_: None = Depends(require_api_key)) -> JSONResponse:
     """Stop the consumer service."""
     try:
         stop_consumer()
@@ -106,7 +108,7 @@ def stop_consumer_endpoint() -> JSONResponse:
 
 
 @app.get("/stats")
-def get_stats() -> JSONResponse:
+def get_stats(_: None = Depends(require_api_key)) -> JSONResponse:
     """Get consumer statistics."""
     return JSONResponse(
         {

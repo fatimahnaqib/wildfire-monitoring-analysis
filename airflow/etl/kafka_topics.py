@@ -24,6 +24,8 @@ from typing import Any, Dict, List
 
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from etl.transport_config import kafka_common_client_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -125,7 +127,10 @@ def create_kafka_admin_client(bootstrap_servers: str) -> AdminClient:
     Returns:
         AdminClient: Configured admin client
     """
-    admin_config = {"bootstrap.servers": bootstrap_servers}
+    admin_config = {
+        "bootstrap.servers": bootstrap_servers,
+        **kafka_common_client_config(),
+    }
     return AdminClient(admin_config)
 
 

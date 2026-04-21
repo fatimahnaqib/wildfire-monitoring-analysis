@@ -21,6 +21,7 @@ from confluent_kafka import Consumer, KafkaError
 
 from etl.config import config as airflow_config
 from etl.kafka_dlq import build_dlq_envelope, publish_single_dlq
+from etl.transport_config import kafka_common_client_config, kafka_config_for_log
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -71,6 +72,7 @@ class IngestionCommandConsumer:
             "enable.auto.commit": False,
             "session.timeout.ms": 30000,
             "heartbeat.interval.ms": 10000,
+            **kafka_common_client_config(),
         }
 
         self.consumer = None
@@ -308,7 +310,10 @@ class IngestionCommandConsumer:
         """
         try:
             consumer = Consumer(self.consumer_config)
-            logger.info(f"Kafka consumer created with config: {self.consumer_config}")
+            logger.info(
+                "Kafka consumer created with config: %s",
+                kafka_config_for_log(self.consumer_config),
+            )
             return consumer
 
         except Exception as e:

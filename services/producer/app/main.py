@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from fastapi import FastAPI, Query
+from fastapi import Depends
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
@@ -12,6 +13,7 @@ from etl.command_producer import (
     send_ingestion_command,
 )
 from etl.config import config as airflow_config
+from app.security import require_api_key
 
 
 logger = logging.getLogger("producer_service")
@@ -60,6 +62,7 @@ def produce(
         default=None,
         description="FIRMS source e.g. VIIRS_SNPP_NRT; defaults from service config",
     ),
+    _: None = Depends(require_api_key),
 ) -> JSONResponse:
     """
     Trigger ingestion asynchronously by publishing a command to Kafka.

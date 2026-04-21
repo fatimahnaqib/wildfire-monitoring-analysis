@@ -3,8 +3,10 @@ import os
 
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from transport_config import kafka_common_client_config
+
 bootstrap = os.getenv("KAFKA_BROKER", "localhost:9092")
-admin_conf = {"bootstrap.servers": bootstrap}
+admin_conf = {"bootstrap.servers": bootstrap, **kafka_common_client_config()}
 admin_client = AdminClient(admin_conf)
 
 topic_name = "wildfire_data"

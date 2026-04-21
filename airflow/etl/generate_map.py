@@ -19,6 +19,7 @@ from psycopg2 import OperationalError, DatabaseError
 from psycopg2.pool import ThreadedConnectionPool
 
 from etl.config import config
+from etl.transport_config import postgres_connect_kwargs
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def _get_pool() -> ThreadedConnectionPool:
                 password=config.postgres_password,
                 host=config.postgres_host,
                 port=config.postgres_port,
+                **postgres_connect_kwargs(),
             )
             logger.info(
                 "PostgreSQL connection pool ready for map generation (min=%s max=%s)",

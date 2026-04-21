@@ -16,5 +16,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 COPY create_topic.py /app/
 COPY consumer.py /app/
 COPY kafka_dlq.py /app/
+COPY airflow/etl/transport_config.py /app/transport_config.py
 
 CMD ["sh", "-c", "python create_topic.py && python consumer.py"]

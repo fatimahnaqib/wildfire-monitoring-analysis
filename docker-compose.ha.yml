@@ -25,71 +25,85 @@ services:
       interval: 5s
       timeout: 2s
       retries: 1
+    networks:
+      - backend
 
   postgresql-primary:
     image: bitnami/postgresql-repmgr:16
     environment:
-      - POSTGRESQL_POSTGRES_PASSWORD=airflow
-      - POSTGRESQL_USERNAME=airflow
-      - POSTGRESQL_PASSWORD=airflow
-      - POSTGRESQL_DATABASE=airflowdb
+      - POSTGRESQL_POSTGRES_PASSWORD=${POSTGRESQL_POSTGRES_PASSWORD}
+      - POSTGRESQL_USERNAME=${POSTGRES_USER}
+      - POSTGRESQL_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRESQL_DATABASE=${AIRFLOW_DB:-airflowdb}
       - POSTGRESQL_NUM_SYNCHRONOUS_REPLICAS=1
       - REPMGR_PRIMARY_HOST=postgresql-primary
       - REPMGR_PRIMARY_PORT=5432
       - REPMGR_PARTNER_NODES=postgresql-primary,postgresql-replica
       - REPMGR_NODE_NAME=postgresql-primary
       - REPMGR_NODE_NETWORK_NAME=postgresql-primary
-      - REPMGR_USERNAME=repmgr
-      - REPMGR_PASSWORD=repmgrpass
-      - REPMGR_DATABASE=repmgr
+      - REPMGR_USERNAME=${REPMGR_USERNAME}
+      - REPMGR_PASSWORD=${REPMGR_PASSWORD}
+      - REPMGR_DATABASE=${REPMGR_DATABASE:-repmgr}
     volumes:
       - postgresql_primary_data:/bitnami/postgresql
       # Keep your existing schema init. It runs once on primary bootstrap.
       - ./postgres/init/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow -d airflowdb || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRESQL_USERNAME\" -d \"$$POSTGRESQL_DATABASE\" || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - backend
 
   postgresql-replica:
     image: bitnami/postgresql-repmgr:16
     environment:
-      - POSTGRESQL_POSTGRES_PASSWORD=airflow
-      - POSTGRESQL_USERNAME=airflow
-      - POSTGRESQL_PASSWORD=airflow
-      - POSTGRESQL_DATABASE=airflowdb
+      - POSTGRESQL_POSTGRES_PASSWORD=${POSTGRESQL_POSTGRES_PASSWORD}
+      - POSTGRESQL_USERNAME=${POSTGRES_USER}
+      - POSTGRESQL_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRESQL_DATABASE=${AIRFLOW_DB:-airflowdb}
       - REPMGR_PRIMARY_HOST=postgresql-primary
       - REPMGR_PRIMARY_PORT=5432
       - REPMGR_PARTNER_NODES=postgresql-primary,postgresql-replica
       - REPMGR_NODE_NAME=postgresql-replica
       - REPMGR_NODE_NETWORK_NAME=postgresql-replica
-      - REPMGR_USERNAME=repmgr
-      - REPMGR_PASSWORD=repmgrpass
-      - REPMGR_DATABASE=repmgr
+      - REPMGR_USERNAME=${REPMGR_USERNAME}
+      - REPMGR_PASSWORD=${REPMGR_PASSWORD}
+      - REPMGR_DATABASE=${REPMGR_DATABASE:-repmgr}
     volumes:
       - postgresql_replica_data:/bitnami/postgresql
     depends_on:
       postgresql-primary:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow -d airflowdb || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRESQL_USERNAME\" -d \"$$POSTGRESQL_DATABASE\" || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - backend
 
   pgpool:
     image: bitnami/pgpool:4
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       - PGPOOL_BACKEND_NODES=0:postgresql-primary:5432,1:postgresql-replica:5432
-      - PGPOOL_SR_CHECK_USER=airflow
-      - PGPOOL_SR_CHECK_PASSWORD=airflow
-      - PGPOOL_POSTGRES_USERNAME=airflow
-      - PGPOOL_POSTGRES_PASSWORD=airflow
-      - PGPOOL_ADMIN_USERNAME=admin
-      - PGPOOL_ADMIN_PASSWORD=adminpass
+      - PGPOOL_SR_CHECK_USER=${POSTGRES_USER}
+      - PGPOOL_SR_CHECK_PASSWORD=${POSTGRES_PASSWORD}
+      - PGPOOL_POSTGRES_USERNAME=${POSTGRES_USER}
+      - PGPOOL_POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGPOOL_ADMIN_USERNAME=${PGPOOL_ADMIN_USERNAME}
+      - PGPOOL_ADMIN_PASSWORD=${PGPOOL_ADMIN_PASSWORD}
       - PGPOOL_ENABLE_LOAD_BALANCING=no
       - PGPOOL_ENABLE_LOG_CONNECTIONS=yes
       - PGPOOL_ENABLE_LOG_HOSTNAME=yes
@@ -99,10 +113,17 @@ services:
       postgresql-replica:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U airflow -d airflowdb || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h 127.0.0.1 -p 5432 -U \"$$PGPOOL_POSTGRES_USERNAME\" -d \"$$AIRFLOW_DB\" || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - app
+      - backend
 
   # ---------------------------------------------------------
   # Point existing services at Pgpool via environment overrides
@@ -112,8 +133,8 @@ services:
       - POSTGRES_HOST=pgpool
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
@@ -123,8 +144,8 @@ services:
       - POSTGRES_HOST=pgpool
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
@@ -134,8 +155,8 @@ services:
       - POSTGRES_HOST=pgpool
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wildfire_db
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
@@ -193,35 +214,50 @@ services:
 
   airflow-webserver:
     environment:
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgpool:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
 
   airflow-scheduler:
     environment:
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgpool:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
 
   airflow-scheduler-2:
     environment:
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgpool:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
 
   airflow-triggerer:
     environment:
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgpool:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
 
   airflow-init:
     environment:
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@pgpool:5432/airflowdb
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgpool:5432/${AIRFLOW_DB:-airflowdb}${AIRFLOW_SQLALCHEMY_CONN_SUFFIX:-}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       pgpool:
         condition: service_healthy
@@ -229,4 +265,9 @@ services:
 volumes:
   postgresql_primary_data:
   postgresql_replica_data:
+
+networks:
+  app: {}
+  backend:
+    internal: true
 
