@@ -40,11 +40,7 @@ _demo_mode = os.getenv("DEMO_MODE", "false").strip().lower() in {
     "y",
     "on",
 }
-_app_title = (
-    "Wildfire Monitoring Public Demo"
-    if _demo_mode
-    else "Wildfire Map Service"
-)
+_app_title = "Wildfire Monitoring Public Demo" if _demo_mode else "Wildfire Map Service"
 app = FastAPI(
     title=_app_title,
     version="1.1.0",

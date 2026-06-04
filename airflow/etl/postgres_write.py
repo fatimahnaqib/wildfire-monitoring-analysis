@@ -76,6 +76,7 @@ def insert_wildfire_batch(
 
     tuples = [row_to_tuple(r) for r in rows]
     page_size = min(500, len(tuples))
+
     def _run_insert(conn: Any) -> int:
         try:
             with conn.cursor() as cursor:
