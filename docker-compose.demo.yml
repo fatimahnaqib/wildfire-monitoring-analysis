@@ -1,0 +1,69 @@
+# Public demo stack: PostgreSQL + map-api only (no Kafka, Airflow, or workers).
+#
+# Usage:
+#   cp env.demo.example .env
+#   docker compose -f docker-compose.demo.yml up -d --build
+#   docker compose -f docker-compose.demo.yml exec postgres \
+#     psql -U "$POSTGRES_USER" -d wildfire_db -f /seed/demo_sample.sql
+#   open http://localhost:8003/
+#
+services:
+  postgres:
+    image: postgres:14
+    container_name: wildfire_demo_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+      - ./postgres/init/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./postgres/seed:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - demo
+
+  map-api:
+    build:
+      context: .
+      dockerfile: ./services/map/Dockerfile
+    container_name: wildfire_demo_api
+    ports:
+      - "0.0.0.0:${DEMO_API_PORT:-8003}:8003"
+    environment:
+      DEMO_MODE: "true"
+      MAP_CONSUMER_ENABLED: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: wildfire_db
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Required by WildfireConfig even for read-only demo (use placeholder if not syncing)
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-demo-placeholder-key}
+      AIRFLOW_DASHBOARD_DIR: /dashboard
+      OSM_TILE_USE_PROXY: "true"
+      MAP_PUBLIC_BASE_URL: ${MAP_PUBLIC_BASE_URL:-http://localhost:8003}
+      MAP_LOOKBACK_DAYS: ${MAP_LOOKBACK_DAYS:-30}
+      MAP_MAX_RECORDS: ${MAP_MAX_RECORDS:-5000}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      WILDFIRE_API_KEY: ${WILDFIRE_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./airflow/dashboard:/dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - demo
+
+volumes:
+  demo_postgres_data:
+
+networks:
+  demo:
+    driver: bridge

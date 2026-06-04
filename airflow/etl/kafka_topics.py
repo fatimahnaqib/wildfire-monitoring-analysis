@@ -205,12 +205,21 @@ def list_topics(bootstrap_servers: str) -> List[str]:
 
 
 if __name__ == "__main__":
+    import sys
+
     bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     logging.basicConfig(level=logging.INFO)
 
     logger.info("Ensuring all required topics exist...")
     results = ensure_topics_exist(bootstrap_servers)
 
+    failed = []
     for topic, success in results.items():
         status = "✓" if success else "✗"
         logger.info(f"{status} {topic}")
+        if not success:
+            failed.append(topic)
+
+    if failed:
+        logger.error("Failed to ensure topics: %s", ", ".join(failed))
+        sys.exit(1)

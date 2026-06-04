@@ -63,7 +63,7 @@ class MapGenerationConsumer:
         self.default_center_lat = float(os.getenv("MAP_CENTER_LAT", "37.0"))
         self.default_center_lon = float(os.getenv("MAP_CENTER_LON", "-120.0"))
         self.default_zoom = int(os.getenv("MAP_ZOOM", "5"))
-        self.default_lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "7"))
+        self.default_lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "30"))
         self.default_max_records = int(os.getenv("MAP_MAX_RECORDS", "5000"))
 
         # Consumer configuration

@@ -4,20 +4,26 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Dict, Union
+from datetime import date
+from pathlib import Path
+from typing import Dict, Optional, Union
 
 from fastapi import FastAPI, Query, Request, Depends
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
+    RedirectResponse,
     Response,
 )
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
 from etl.config import config as wf_config
-from etl.generate_map import generate_wildfire_map
-from app.map_consumer import MapGenerationConsumer
+from etl.demo_queries import fetch_demo_stats, fetch_wildfire_events
+from etl.demo_sync import sync_firms_to_postgres
+from etl.generate_map import MapGenerationError, generate_wildfire_map
 from app.security import require_api_key
 
 
@@ -27,7 +33,30 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-app = FastAPI(title="Wildfire Map Service", version="1.0.0")
+_demo_mode = os.getenv("DEMO_MODE", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
+_app_title = (
+    "Wildfire Monitoring Public Demo"
+    if _demo_mode
+    else "Wildfire Map Service"
+)
+app = FastAPI(
+    title=_app_title,
+    version="1.1.0",
+    description=(
+        "Interactive wildfire map and public demo API. "
+        "Production ingest uses Kafka; the demo path reads PostgreSQL only."
+    ),
+)
+
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 _HTML_REFERRER_HEADERS: Dict[str, str] = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -58,6 +87,8 @@ def start_map_consumer_background():
     def run_consumer():
         global map_consumer_instance
         try:
+            from app.map_consumer import MapGenerationConsumer
+
             map_consumer_instance = MapGenerationConsumer()
             map_consumer_instance.consume_messages()
         except Exception as e:
@@ -66,6 +97,69 @@ def start_map_consumer_background():
     map_consumer_thread = threading.Thread(target=run_consumer, daemon=True)
     map_consumer_thread.start()
     logger.info("Map consumer started in background thread")
+
+
+@app.get("/", include_in_schema=False)
+def demo_dashboard() -> Union[FileResponse, RedirectResponse]:
+    """Public demo dashboard (static SPA)."""
+    index = _STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    return RedirectResponse(url="/map")
+
+
+@app.get("/demo/wildfires")
+def demo_wildfires(
+    lookback_days: int = Query(
+        default=30,
+        ge=0,
+        le=365,
+        description="Include records from the last N days (0 = no lookback filter)",
+    ),
+    limit: int = Query(default=500, ge=1, le=10000),
+    min_date: Optional[date] = Query(default=None),
+    max_date: Optional[date] = Query(default=None),
+) -> JSONResponse:
+    """JSON list of wildfire events for the public dashboard."""
+    try:
+        payload = fetch_wildfire_events(
+            lookback_days=lookback_days if lookback_days > 0 else None,
+            limit=limit,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        return JSONResponse(payload)
+    except MapGenerationError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/demo/stats")
+def demo_stats() -> JSONResponse:
+    """Aggregate database stats for the demo dashboard."""
+    try:
+        return JSONResponse({"stats": fetch_demo_stats()})
+    except MapGenerationError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/demo/sync")
+def demo_sync_firms(_: None = Depends(require_api_key)) -> JSONResponse:
+    """
+    Refresh demo data: download NASA FIRMS CSV and insert into PostgreSQL.
+
+    Protected by API key. Not used by the public read path.
+    """
+    if not os.getenv("FIRMS_MAP_KEY"):
+        return JSONResponse(
+            {"status": "error", "message": "FIRMS_MAP_KEY is not configured"},
+            status_code=500,
+        )
+    try:
+        summary = sync_firms_to_postgres()
+        return JSONResponse({"status": "success", **summary})
+    except Exception as e:
+        logger.exception("Demo FIRMS sync failed")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/health")
@@ -135,7 +229,7 @@ def get_map(
     zoom: int = Query(default=5, description="Initial zoom level"),
     format: str = Query(default="html", description="Response format: html or json"),
     lookback_days: int = Query(
-        default=int(os.getenv("MAP_LOOKBACK_DAYS", "7")),
+        default=int(os.getenv("MAP_LOOKBACK_DAYS", "30")),
         description="Only include records from the last N days (<=0 disables lookback filter)",
     ),
     max_records: int = Query(
@@ -199,7 +293,7 @@ def generate_map(
     ),
     zoom: int = Query(default=5, description="Initial zoom level"),
     lookback_days: int = Query(
-        default=int(os.getenv("MAP_LOOKBACK_DAYS", "7")),
+        default=int(os.getenv("MAP_LOOKBACK_DAYS", "30")),
         description="Only include records from the last N days (<=0 disables lookback filter)",
     ),
     max_records: int = Query(
@@ -248,17 +342,21 @@ def generate_map(
 
 @app.on_event("startup")
 def startup_event():
-    """Start the map consumer and ensure initial map file exists."""
-    logger.info("Starting map service with event-driven map consumer...")
-    # Generate map once on startup so the file exists (empty or with current DB data)
+    """Optionally start Kafka map consumer and pre-generate Folium HTML."""
+    if _demo_mode:
+        logger.info("Demo mode enabled — Kafka map consumer disabled by default")
+    # Generate map once on startup so /map works (empty DB is OK)
     try:
         generate_wildfire_map(center_lat=37.0, center_lon=-120.0, zoom=5)
         logger.info("Initial map generated at startup")
     except Exception as e:
         logger.warning(
-            "Initial map generation at startup failed (will retry when events arrive): %s",
+            "Initial map generation at startup failed (will retry on /map): %s",
             e,
         )
+    if _demo_mode:
+        logger.info("Public demo dashboard at / — API at /demo/wildfires")
+        return
     enabled = os.getenv("MAP_CONSUMER_ENABLED", "true").strip().lower()
     if enabled in {"1", "true", "yes", "y", "on"}:
         start_map_consumer_background()
