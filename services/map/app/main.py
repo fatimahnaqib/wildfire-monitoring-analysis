@@ -95,7 +95,7 @@ def start_map_consumer_background():
     logger.info("Map consumer started in background thread")
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/", include_in_schema=False, response_model=None)
 def demo_dashboard() -> Union[FileResponse, RedirectResponse]:
     """Public demo dashboard (static SPA)."""
     index = _STATIC_DIR / "index.html"
