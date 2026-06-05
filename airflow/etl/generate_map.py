@@ -137,12 +137,21 @@ def _default_map_query_limits() -> Tuple[int, int]:
     These protect the map generator (and API) from loading an ever-growing table
     into memory.
     """
-    lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "7"))
+    lookback_days = int(os.getenv("MAP_LOOKBACK_DAYS", "30"))
     max_records = int(os.getenv("MAP_MAX_RECORDS", "5000"))
     # Guardrails for silly values
     lookback_days = max(1, lookback_days)
     max_records = max(1, max_records)
     return lookback_days, max_records
+
+
+def _lookback_fallback_enabled() -> bool:
+    """When true, use latest records if the lookback window has no rows."""
+    return os.getenv("MAP_LOOKBACK_FALLBACK", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def fetch_wildfire_data(
@@ -189,6 +198,24 @@ def fetch_wildfire_data(
                 lookback_days,
                 max_records,
             )
+            if df.empty and _lookback_fallback_enabled():
+                logger.warning(
+                    "No records in the last %s days; falling back to latest %s records",
+                    lookback_days,
+                    max_records,
+                )
+                query = """
+                SELECT latitude, longitude, bright_ti4, acq_date, acq_time, satellite
+                FROM wildfire_events
+                ORDER BY acq_date DESC, acq_time DESC
+                LIMIT %s
+                """
+                df = pd.read_sql_query(query, connection, params=(max_records,))
+                logger.info(
+                    "Fetched %s wildfire records from database (lookback fallback, limit=%s)",
+                    len(df),
+                    max_records,
+                )
         else:
             query = """
             SELECT latitude, longitude, bright_ti4, acq_date, acq_time, satellite

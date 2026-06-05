@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wildfire Monitoring Demo</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <h1>Wildfire Monitoring Demo</h1>
+      <p class="tagline">
+        NASA FIRMS VIIRS detections — read-only public snapshot
+      </p>
+    </div>
+    <nav class="header-nav">
+      <a href="/docs" target="_blank" rel="noopener">API (Swagger)</a>
+      <a href="/map" target="_blank" rel="noopener">Folium map</a>
+      <a href="/health" target="_blank" rel="noopener">Health</a>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="panel stats-panel" id="stats-panel" aria-live="polite">
+      <p class="loading">Loading statistics…</p>
+    </section>
+
+    <section class="panel controls-panel">
+      <h2>Explore detections</h2>
+      <form id="filter-form" class="filter-form">
+        <label>
+          Lookback (days)
+          <input type="number" id="lookback-days" name="lookback_days" min="0" max="365" value="30" />
+        </label>
+        <label>
+          Max events
+          <input type="number" id="limit" name="limit" min="1" max="5000" value="500" />
+        </label>
+        <label>
+          From date
+          <input type="date" id="min-date" name="min_date" />
+        </label>
+        <label>
+          To date
+          <input type="date" id="max-date" name="max_date" />
+        </label>
+        <button type="submit" class="btn-primary">Apply filters</button>
+        <button type="button" id="reset-filters" class="btn-secondary">Reset</button>
+      </form>
+      <p id="status-message" class="status-message" role="status"></p>
+    </section>
+
+    <section class="panel map-panel">
+      <h2>Detection map</h2>
+      <div id="map" class="map-container" aria-label="Wildfire detection map"></div>
+    </section>
+
+    <section class="panel table-panel">
+      <h2>Recent events <span id="event-count" class="badge">0</span></h2>
+      <div class="table-wrap">
+        <table id="events-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Lat</th>
+              <th>Lon</th>
+              <th>Brightness</th>
+              <th>FRP</th>
+              <th>Satellite</th>
+              <th>Conf.</th>
+            </tr>
+          </thead>
+          <tbody id="events-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      Data source:
+      <a href="https://firms.modaps.eosdis.nasa.gov/" target="_blank" rel="noopener">NASA FIRMS</a>.
+      Basemap © OpenStreetMap contributors.
+      Production pipeline uses Kafka + Airflow; this demo reads PostgreSQL only.
+    </p>
+  </footer>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

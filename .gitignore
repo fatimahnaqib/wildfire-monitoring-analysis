@@ -28,7 +28,6 @@ venv.bak/
 .env.local
 .env.*.local
 *.env
-.env.example
 
 # ==============================================================================
 # Testing & Code Quality
@@ -112,6 +111,7 @@ EVENT_DRIVEN_ARCHITECTURE.md
 REFACTORING_SUMMARY.md
 docs/TESTING_EVENT_DRIVEN_WORKFLOW.md
 docs/load-test-consumer.md
+docs/CODEBASE_WALKTHROUGH.md
 
 # ==============================================================================
 # IDE / Editors

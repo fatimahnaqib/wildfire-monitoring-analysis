@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: ./airflow/Dockerfile
     container_name: kafka_topics_init
-    command: ["python", "/opt/airflow/scripts/ensure_kafka_topics.py"]
+    command: ["python", "-m", "etl.kafka_topics"]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-}
@@ -580,7 +580,9 @@ services:
 
   # Standalone Kafka consumer (creates topic if needed)
   kafka_consumer:
-    build: ./kafka_consumer
+    build:
+      context: .
+      dockerfile: ./kafka_consumer/Dockerfile
     container_name: wildfire_kafka_consumer
     environment:
       KAFKA_BROKER: kafka-1:9092,kafka-2:9092,kafka-3:9092

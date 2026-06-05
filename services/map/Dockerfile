@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 
 # Copy application code
 COPY services/map/app /app/app
+COPY services/map/static /app/static
 COPY airflow/etl /app/etl
 
 EXPOSE 8003

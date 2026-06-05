@@ -1,0 +1,11 @@
+# AWS overlay: point map-api at RDS and drop dependency on a local postgres container.
+#
+#   export POSTGRES_HOST=your-instance.region.rds.amazonaws.com
+#   docker compose -f docker-compose.demo.yml -f docker-compose.demo.aws.yml up -d --build map-api
+#
+services:
+  map-api:
+    depends_on: []
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:?Set POSTGRES_HOST to your RDS endpoint}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-require}
